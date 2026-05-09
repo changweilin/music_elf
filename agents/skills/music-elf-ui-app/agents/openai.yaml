@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Elf UI App"
+  short_description: "Flutter desktop and mobile app work"
+  default_prompt: "Use $music-elf-ui-app to design or implement a Flutter workflow around the native core."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Elf Spatial Numerics"
+  short_description: "Timing, pitch, and visualization math"
+  default_prompt: "Use $music-elf-spatial-numerics to analyze Music Elf coordinate transforms or metrics."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Elf Localization"
+  short_description: "Multilingual UI and lyric localization"
+  default_prompt: "Use $music-elf-localization to localize Music Elf strings while preserving music terms."

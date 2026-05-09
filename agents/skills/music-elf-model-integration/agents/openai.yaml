@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Elf Model Integration"
+  short_description: "Hybrid AI provider adapter work"
+  default_prompt: "Use $music-elf-model-integration to add or validate a model-backed Music Elf capability."

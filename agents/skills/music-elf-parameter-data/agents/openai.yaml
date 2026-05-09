@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Elf Parameter Data"
+  short_description: "Presets, catalogs, and app data storage"
+  default_prompt: "Use $music-elf-parameter-data to design Music Elf presets, migrations, or JSON import/export."

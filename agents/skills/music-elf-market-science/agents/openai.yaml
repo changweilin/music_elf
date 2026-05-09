@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Elf Market Science"
+  short_description: "Market research and product experiments"
+  default_prompt: "Use $music-elf-market-science to research a Music Elf market or product decision."

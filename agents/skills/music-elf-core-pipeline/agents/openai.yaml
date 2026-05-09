@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Elf Core Pipeline"
+  short_description: "Native audio-to-score pipeline work"
+  default_prompt: "Use $music-elf-core-pipeline to update the native audio analysis pipeline safely."
