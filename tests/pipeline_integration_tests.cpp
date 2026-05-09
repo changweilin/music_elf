@@ -68,6 +68,7 @@ void test_pipeline_from_wav_to_exports() {
             "pipeline score should have time signature");
     require(result.musicxml.find("<clef><sign>G</sign><line>2</line></clef>") != std::string::npos,
             "pipeline score should have treble clef");
+    require(result.musicxml.find("<harmony>") != std::string::npos, "pipeline score should have chord symbols");
     require(result.midi_bytes[0] == 'M' && result.midi_bytes[1] == 'T', "MIDI header");
 }
 

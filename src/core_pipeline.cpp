@@ -146,8 +146,12 @@ CorePipelineResult run_core_pipeline(
         make_midi_notes(result.rhythm, result.dynamics, result.accompaniment_notes, local_config.midi);
     result.midi_bytes = write_midi(midi_notes.data(), midi_notes.size(), local_config.midi);
 
+    const std::vector<Chord>* score_chords =
+        result.chord_progressions.empty() ? nullptr : &result.chord_progressions.front().chords;
     result.musicxml = write_musicxml(
         result.rhythm,
+        score_chords == nullptr ? nullptr : score_chords->data(),
+        score_chords == nullptr ? 0 : score_chords->size(),
         result.lyric_alignments.data(),
         result.lyric_alignments.size(),
         local_config.musicxml);

@@ -30,6 +30,15 @@ NoteEvent make_note(double start, double end, int midi_note) {
     return note;
 }
 
+music_elf::Chord make_chord(double start, double end, int root, music_elf::ChordQuality quality) {
+    music_elf::Chord chord;
+    chord.start_seconds = start;
+    chord.end_seconds = end;
+    chord.root_pitch_class = root;
+    chord.quality = quality;
+    return chord;
+}
+
 std::size_t count_occurrences(const std::string& text, const std::string& needle) {
     std::size_t count = 0;
     std::size_t offset = 0;
@@ -166,6 +175,27 @@ void test_musicxml_writer_outputs_key_time_and_clef() {
     require(xml.find("<clef><sign>G</sign><line>2</line></clef>") != std::string::npos, "treble clef");
 }
 
+void test_musicxml_writer_outputs_chord_symbols() {
+    const std::vector<NoteEvent> notes = {
+        make_note(0.0, 2.0, 60),
+    };
+    const std::vector<music_elf::Chord> chords = {
+        make_chord(0.0, 1.0, 0, music_elf::ChordQuality::Major),
+        make_chord(1.0, 2.0, 7, music_elf::ChordQuality::Dominant7),
+    };
+    MusicXmlWriterConfig config;
+    config.bpm = 120.0;
+
+    const std::string xml = write_musicxml(notes.data(), notes.size(), chords.data(), chords.size(), config);
+
+    require(count_occurrences(xml, "<harmony>") == 2, "two chord symbols");
+    require(xml.find("<root><root-step>C</root-step></root>") != std::string::npos, "C root");
+    require(xml.find("<kind text=\"\">major</kind>") != std::string::npos, "major kind");
+    require(xml.find("<root><root-step>G</root-step></root>") != std::string::npos, "G root");
+    require(xml.find("<kind text=\"7\">dominant</kind>") != std::string::npos, "dominant kind");
+    require(xml.find("<tie type=\"start\"/>") != std::string::npos, "chord boundary should split long note");
+}
+
 }  // namespace
 
 int main() {
@@ -177,6 +207,7 @@ int main() {
         test_musicxml_writer_outputs_ties_across_measure();
         test_musicxml_writer_spells_dots_and_sixteenths();
         test_musicxml_writer_outputs_key_time_and_clef();
+        test_musicxml_writer_outputs_chord_symbols();
     } catch (const std::exception& error) {
         std::cerr << "lyrics_musicxml_tests failed: " << error.what() << '\n';
         return EXIT_FAILURE;

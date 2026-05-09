@@ -1,6 +1,7 @@
 #ifndef MUSIC_ELF_MUSICXML_WRITER_HPP
 #define MUSIC_ELF_MUSICXML_WRITER_HPP
 
+#include "music_elf/harmony_analyzer.hpp"
 #include "music_elf/lyric_aligner.hpp"
 #include "music_elf/rhythm_analyzer.hpp"
 
@@ -33,11 +34,41 @@ std::string write_musicxml(
     const MusicXmlWriterConfig& config = MusicXmlWriterConfig{});
 
 std::string write_musicxml(
+    const NoteEvent* notes,
+    std::size_t note_count,
+    const Chord* chords,
+    std::size_t chord_count,
+    const MusicXmlWriterConfig& config = MusicXmlWriterConfig{});
+
+std::string write_musicxml(
+    const NoteEvent* notes,
+    std::size_t note_count,
+    const Chord* chords,
+    std::size_t chord_count,
+    const LyricAlignment* lyrics,
+    std::size_t lyric_count,
+    const MusicXmlWriterConfig& config = MusicXmlWriterConfig{});
+
+std::string write_musicxml(
     const RhythmAnalysis& rhythm,
     const MusicXmlWriterConfig& config = MusicXmlWriterConfig{});
 
 std::string write_musicxml(
     const RhythmAnalysis& rhythm,
+    const LyricAlignment* lyrics,
+    std::size_t lyric_count,
+    const MusicXmlWriterConfig& config = MusicXmlWriterConfig{});
+
+std::string write_musicxml(
+    const RhythmAnalysis& rhythm,
+    const Chord* chords,
+    std::size_t chord_count,
+    const MusicXmlWriterConfig& config = MusicXmlWriterConfig{});
+
+std::string write_musicxml(
+    const RhythmAnalysis& rhythm,
+    const Chord* chords,
+    std::size_t chord_count,
     const LyricAlignment* lyrics,
     std::size_t lyric_count,
     const MusicXmlWriterConfig& config = MusicXmlWriterConfig{});

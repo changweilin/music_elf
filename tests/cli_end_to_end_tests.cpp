@@ -56,6 +56,7 @@ void test_cli_wav_to_outputs(const std::string& cli_path) {
             "CLI MusicXML should include time signature");
     require(file_contains(musicxml_path, "<clef><sign>G</sign><line>2</line></clef>"),
             "CLI MusicXML should include clef");
+    require(file_contains(musicxml_path, "<harmony>"), "CLI MusicXML should include chord symbols");
 
     std::remove(wav_path.c_str());
     std::remove(midi_path.c_str());

@@ -31,7 +31,7 @@ flowchart TD
     K --> L["MIDI export<br/>Standard MIDI file bytes"]
     K --> X4["Built-in audio preview render<br/>simple oscillator WAV"]
     E --> L
-    E --> M["MusicXML export<br/>quantized single-part editable score"]
+    E --> M["MusicXML export<br/>quantized lead sheet with chord symbols"]
     H --> M
     L --> X1["CLI demo<br/>WAV to MIDI / MusicXML"]
     M --> X1
@@ -64,7 +64,7 @@ flowchart TD
 - End-to-end pipeline runner: `include/music_elf/core_pipeline.hpp`
 - MIDI export: `include/music_elf/midi_writer.hpp`
 - General MIDI catalog generator: `include/music_elf/midi_catalog.hpp`
-- Quantized single-part MusicXML export with measures, rests, ties, lyrics, key, time, and clef: `include/music_elf/musicxml_writer.hpp`
+- Quantized single-part MusicXML lead sheet export with measures, rests, ties, lyrics, chord symbols, key, time, and clef: `include/music_elf/musicxml_writer.hpp`
 - CLI demo, inspect, benchmark, catalog, and render-preview helpers: `tools/music_elf_cli.cpp`
 - C ABI wrapper with pitch, pipeline summary, MIDI export, and MusicXML export helpers: `include/music_elf/c_api.h`
 - Model-backed feature interfaces: `include/music_elf/model_interfaces.hpp`

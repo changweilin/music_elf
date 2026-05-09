@@ -137,8 +137,8 @@ Lyrics and export:
   notes deterministically. It is not ASR.
 - `include/music_elf/midi_writer.hpp` exports Standard MIDI files in memory.
 - `include/music_elf/musicxml_writer.hpp` exports quantized single-part
-  MusicXML with measures, rests, ties, lyrics, key signature, time signature,
-  and treble clef.
+  MusicXML lead sheets with measures, rests, ties, lyrics, chord symbols, key
+  signature, time signature, and treble clef.
 - `include/music_elf/c_api.h` exposes C ABI helpers for pitch detection,
   WAV-to-MIDI export, pipeline summaries, and MIDI/MusicXML file export.
 - `include/music_elf/model_interfaces.hpp` defines explicit interfaces for

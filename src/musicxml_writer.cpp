@@ -41,6 +41,11 @@ struct XmlScoreEvent {
     bool lyric_allowed = false;
 };
 
+struct ChordSymbolEvent {
+    int start_ticks = 0;
+    Chord chord;
+};
+
 PitchSpelling spell_pitch_class(int pitch_class) {
     switch (((pitch_class % 12) + 12) % 12) {
         case 0:
@@ -218,6 +223,42 @@ const LyricAlignment* lyric_for_note(
     return nullptr;
 }
 
+const char* chord_kind_value(ChordQuality quality) {
+    switch (quality) {
+        case ChordQuality::Major:
+            return "major";
+        case ChordQuality::Minor:
+            return "minor";
+        case ChordQuality::Diminished:
+            return "diminished";
+        case ChordQuality::Major7:
+            return "major-seventh";
+        case ChordQuality::Minor7:
+            return "minor-seventh";
+        case ChordQuality::Dominant7:
+            return "dominant";
+    }
+    return "major";
+}
+
+const char* chord_kind_text(ChordQuality quality) {
+    switch (quality) {
+        case ChordQuality::Major:
+            return "";
+        case ChordQuality::Minor:
+            return "m";
+        case ChordQuality::Diminished:
+            return "dim";
+        case ChordQuality::Major7:
+            return "maj7";
+        case ChordQuality::Minor7:
+            return "m7";
+        case ChordQuality::Dominant7:
+            return "7";
+    }
+    return "";
+}
+
 void validate_config(const MusicXmlWriterConfig& config) {
     if (config.divisions_per_quarter <= 0) {
         throw std::invalid_argument("divisions_per_quarter must be positive");
@@ -335,9 +376,77 @@ std::vector<LogicalScoreEvent> logical_events_from_rhythm(
     return events;
 }
 
+std::vector<ChordSymbolEvent> chord_events_from_chords(
+    const RhythmAnalysis& rhythm,
+    const Chord* chords,
+    std::size_t chord_count,
+    const MusicXmlWriterConfig& config) {
+    if (chord_count > 0 && chords == nullptr) {
+        throw std::invalid_argument("chords must not be null when chord_count is non-zero");
+    }
+
+    std::vector<ChordSymbolEvent> events;
+    events.reserve(chord_count);
+    const int beat_ticks = ticks_per_beat(config);
+    const int min_ticks = minimum_ticks(config);
+    const double beat_duration = rhythm.beat_grid.beat_duration_seconds > 0.0
+                                     ? rhythm.beat_grid.beat_duration_seconds
+                                     : 60.0 / config.bpm;
+    const double first_beat = rhythm.beat_grid.first_beat_seconds;
+    for (std::size_t i = 0; i < chord_count; ++i) {
+        if (chords[i].end_seconds <= chords[i].start_seconds) {
+            continue;
+        }
+        const double start_beats = (chords[i].start_seconds - first_beat) / beat_duration;
+        int start_ticks = static_cast<int>(std::llround(start_beats * static_cast<double>(beat_ticks)));
+        start_ticks = round_to_step_ticks(std::max(0, start_ticks), min_ticks);
+        events.push_back({start_ticks, chords[i]});
+    }
+
+    std::stable_sort(
+        events.begin(),
+        events.end(),
+        [](const ChordSymbolEvent& left, const ChordSymbolEvent& right) {
+            return left.start_ticks < right.start_ticks;
+        });
+    events.erase(
+        std::unique(
+            events.begin(),
+            events.end(),
+            [](const ChordSymbolEvent& left, const ChordSymbolEvent& right) {
+                return left.start_ticks == right.start_ticks;
+            }),
+        events.end());
+    return events;
+}
+
+std::vector<int> split_boundaries_from_chords(
+    const std::vector<ChordSymbolEvent>& chord_events,
+    const MusicXmlWriterConfig& config) {
+    std::vector<int> boundaries;
+    boundaries.reserve(chord_events.size());
+    const int measure_ticks = ticks_per_measure(config);
+    for (const auto& event : chord_events) {
+        if (event.start_ticks > 0 && event.start_ticks % measure_ticks != 0) {
+            boundaries.push_back(event.start_ticks);
+        }
+    }
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+    return boundaries;
+}
+
+int next_split_boundary(int start, int end, const std::vector<int>& split_boundaries) {
+    const auto found = std::upper_bound(split_boundaries.begin(), split_boundaries.end(), start);
+    if (found != split_boundaries.end() && *found < end) {
+        return *found;
+    }
+    return end;
+}
+
 void append_xml_events_for_logical_event(
     const LogicalScoreEvent& logical,
     const MusicXmlWriterConfig& config,
+    const std::vector<int>& split_boundaries,
     std::vector<XmlScoreEvent>& out) {
     const int measure_ticks = ticks_per_measure(config);
     int start = logical.start_ticks;
@@ -346,7 +455,9 @@ void append_xml_events_for_logical_event(
 
     while (remaining > 0) {
         const int measure_remaining = measure_ticks - (start % measure_ticks);
-        const int segment_ticks = std::min(remaining, measure_remaining);
+        const int natural_segment_end = start + std::min(remaining, measure_remaining);
+        const int segment_end = next_split_boundary(start, natural_segment_end, split_boundaries);
+        const int segment_ticks = segment_end - start;
         int token_start = start;
         for (const auto& token : split_duration(segment_ticks, config)) {
             XmlScoreEvent event;
@@ -374,10 +485,11 @@ void append_xml_events_for_logical_event(
 
 std::vector<XmlScoreEvent> xml_events_from_rhythm(
     const RhythmAnalysis& rhythm,
-    const MusicXmlWriterConfig& config) {
+    const MusicXmlWriterConfig& config,
+    const std::vector<int>& split_boundaries) {
     std::vector<XmlScoreEvent> events;
     for (const auto& logical : logical_events_from_rhythm(rhythm, config)) {
-        append_xml_events_for_logical_event(logical, config, events);
+        append_xml_events_for_logical_event(logical, config, split_boundaries, events);
     }
     return events;
 }
@@ -407,6 +519,19 @@ void write_pitch(std::ostringstream& xml, int midi_note) {
         xml << "<alter>" << spelling.alter << "</alter>";
     }
     xml << "<octave>" << octave << "</octave></pitch>\n";
+}
+
+void write_harmony(std::ostringstream& xml, const Chord& chord) {
+    const PitchSpelling root = spell_pitch_class(chord.root_pitch_class);
+    xml << "      <harmony>\n";
+    xml << "        <root><root-step>" << root.step << "</root-step>";
+    if (root.alter != 0) {
+        xml << "<root-alter>" << root.alter << "</root-alter>";
+    }
+    xml << "</root>\n";
+    xml << "        <kind text=\"" << escape_xml(chord_kind_text(chord.quality)) << "\">"
+        << chord_kind_value(chord.quality) << "</kind>\n";
+    xml << "      </harmony>\n";
 }
 
 void write_xml_event(
@@ -456,7 +581,7 @@ std::string write_musicxml(
     const NoteEvent* notes,
     std::size_t note_count,
     const MusicXmlWriterConfig& config) {
-    return write_musicxml(notes, note_count, nullptr, 0, config);
+    return write_musicxml(notes, note_count, nullptr, 0, nullptr, 0, config);
 }
 
 std::string write_musicxml(
@@ -465,21 +590,44 @@ std::string write_musicxml(
     const LyricAlignment* lyrics,
     std::size_t lyric_count,
     const MusicXmlWriterConfig& config) {
+    return write_musicxml(notes, note_count, nullptr, 0, lyrics, lyric_count, config);
+}
+
+std::string write_musicxml(
+    const NoteEvent* notes,
+    std::size_t note_count,
+    const Chord* chords,
+    std::size_t chord_count,
+    const MusicXmlWriterConfig& config) {
+    return write_musicxml(notes, note_count, chords, chord_count, nullptr, 0, config);
+}
+
+std::string write_musicxml(
+    const NoteEvent* notes,
+    std::size_t note_count,
+    const Chord* chords,
+    std::size_t chord_count,
+    const LyricAlignment* lyrics,
+    std::size_t lyric_count,
+    const MusicXmlWriterConfig& config) {
     if (note_count > 0 && notes == nullptr) {
         throw std::invalid_argument("notes must not be null when note_count is non-zero");
+    }
+    if (chord_count > 0 && chords == nullptr) {
+        throw std::invalid_argument("chords must not be null when chord_count is non-zero");
     }
     if (lyric_count > 0 && lyrics == nullptr) {
         throw std::invalid_argument("lyrics must not be null when lyric_count is non-zero");
     }
     validate_config(config);
     const RhythmAnalysis rhythm = rhythm_from_notes(notes, note_count, config);
-    return write_musicxml(rhythm, lyrics, lyric_count, config);
+    return write_musicxml(rhythm, chords, chord_count, lyrics, lyric_count, config);
 }
 
 std::string write_musicxml(
     const RhythmAnalysis& rhythm,
     const MusicXmlWriterConfig& config) {
-    return write_musicxml(rhythm, nullptr, 0, config);
+    return write_musicxml(rhythm, nullptr, 0, nullptr, 0, config);
 }
 
 std::string write_musicxml(
@@ -487,16 +635,41 @@ std::string write_musicxml(
     const LyricAlignment* lyrics,
     std::size_t lyric_count,
     const MusicXmlWriterConfig& config) {
+    return write_musicxml(rhythm, nullptr, 0, lyrics, lyric_count, config);
+}
+
+std::string write_musicxml(
+    const RhythmAnalysis& rhythm,
+    const Chord* chords,
+    std::size_t chord_count,
+    const MusicXmlWriterConfig& config) {
+    return write_musicxml(rhythm, chords, chord_count, nullptr, 0, config);
+}
+
+std::string write_musicxml(
+    const RhythmAnalysis& rhythm,
+    const Chord* chords,
+    std::size_t chord_count,
+    const LyricAlignment* lyrics,
+    std::size_t lyric_count,
+    const MusicXmlWriterConfig& config) {
+    if (chord_count > 0 && chords == nullptr) {
+        throw std::invalid_argument("chords must not be null when chord_count is non-zero");
+    }
     if (lyric_count > 0 && lyrics == nullptr) {
         throw std::invalid_argument("lyrics must not be null when lyric_count is non-zero");
     }
     validate_config(config);
 
-    const auto events = xml_events_from_rhythm(rhythm, config);
+    const auto chord_events = chord_events_from_chords(rhythm, chords, chord_count, config);
+    const auto split_boundaries = split_boundaries_from_chords(chord_events, config);
+    const auto events = xml_events_from_rhythm(rhythm, config, split_boundaries);
     const int measure_ticks = ticks_per_measure(config);
-    const int last_measure = events.empty()
-                                 ? 0
-                                 : events.back().start_ticks / measure_ticks;
+    int last_tick = events.empty() ? 0 : events.back().start_ticks;
+    if (!chord_events.empty()) {
+        last_tick = std::max(last_tick, chord_events.back().start_ticks);
+    }
+    const int last_measure = last_tick / measure_ticks;
 
     std::ostringstream xml;
     xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
@@ -508,12 +681,27 @@ std::string write_musicxml(
     xml << "  <part id=\"P1\">\n";
 
     std::size_t event_index = 0;
+    std::size_t chord_index = 0;
     for (int measure = 0; measure <= last_measure; ++measure) {
         write_measure_header(xml, measure + 1, config);
+        const int measure_start = measure * measure_ticks;
+        const int measure_end = measure_start + measure_ticks;
         while (event_index < events.size() &&
                events[event_index].start_ticks / measure_ticks == measure) {
+            while (chord_index < chord_events.size() &&
+                   chord_events[chord_index].start_ticks < measure_end &&
+                   chord_events[chord_index].start_ticks <= events[event_index].start_ticks) {
+                write_harmony(xml, chord_events[chord_index].chord);
+                ++chord_index;
+            }
             write_xml_event(xml, events[event_index], lyrics, lyric_count);
             ++event_index;
+        }
+        while (chord_index < chord_events.size() &&
+               chord_events[chord_index].start_ticks >= measure_start &&
+               chord_events[chord_index].start_ticks < measure_end) {
+            write_harmony(xml, chord_events[chord_index].chord);
+            ++chord_index;
         }
         xml << "    </measure>\n";
     }
