@@ -4,6 +4,7 @@
 #include "music_elf/core_pipeline.hpp"
 #include "music_elf/pitch_detector.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -50,6 +51,56 @@ MusicElfPitchEstimate to_c_estimate(const music_elf::PitchEstimate& estimate) {
     c.confidence = estimate.confidence;
     c.voiced = estimate.voiced ? 1 : 0;
     return c;
+}
+
+MusicElfPipelineSummary to_c_summary(
+    const music_elf::AudioBuffer& audio,
+    const music_elf::CorePipelineResult& result) {
+    MusicElfPipelineSummary summary{};
+    summary.sample_rate = audio.sample_rate;
+    summary.channels = audio.channels;
+    const std::size_t frames = audio.channels > 0
+                                   ? audio.samples.size() / static_cast<std::size_t>(audio.channels)
+                                   : 0;
+    summary.duration_seconds = audio.sample_rate > 0
+                                   ? static_cast<double>(frames) / static_cast<double>(audio.sample_rate)
+                                   : 0.0;
+    summary.pitch_frame_count = result.pitch_estimates.size();
+    summary.voiced_pitch_frame_count = static_cast<std::size_t>(std::count_if(
+        result.pitch_estimates.begin(),
+        result.pitch_estimates.end(),
+        [](const music_elf::PitchEstimate& estimate) {
+            return estimate.voiced;
+        }));
+    summary.note_count = result.notes.size();
+    summary.estimated_bpm = result.rhythm.beat_grid.bpm;
+    summary.key_tonic_pitch_class = result.key.tonic_pitch_class;
+    summary.key_is_minor = result.key.mode == music_elf::ScaleMode::Minor ? 1 : 0;
+    summary.key_confidence = result.key.confidence;
+    summary.chord_progression_count = result.chord_progressions.size();
+    summary.accompaniment_note_count = result.accompaniment_notes.size();
+    summary.lyric_alignment_count = result.lyric_alignments.size();
+    summary.midi_byte_count = result.midi_bytes.size();
+    summary.musicxml_char_count = result.musicxml.size();
+    return summary;
+}
+
+int write_binary_file(const char* path, const std::vector<std::uint8_t>& bytes) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        return set_error(std::string("failed to create file: ") + path);
+    }
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return 0;
+}
+
+int write_text_file(const char* path, const std::string& text) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        return set_error(std::string("failed to create file: ") + path);
+    }
+    out << text;
+    return 0;
 }
 
 }  // namespace
@@ -120,19 +171,49 @@ int music_elf_pitch_detector_process(
 }
 
 int music_elf_process_wav_to_midi(const char* input_wav_path, const char* output_midi_path) {
+    return music_elf_process_wav_to_outputs(input_wav_path, output_midi_path, nullptr, nullptr);
+}
+
+int music_elf_analyze_wav(const char* input_wav_path, MusicElfPipelineSummary* out_summary) {
     try {
         clear_error();
-        if (input_wav_path == nullptr || output_midi_path == nullptr) {
-            return set_error("input and output paths must not be null");
+        if (input_wav_path == nullptr || out_summary == nullptr) {
+            return set_error("input path and summary output must not be null");
         }
         const auto audio = music_elf::read_wav_file(input_wav_path);
         const auto result = music_elf::run_core_pipeline(audio);
-        std::ofstream out(output_midi_path, std::ios::binary);
-        if (!out) {
-            return set_error(std::string("failed to create MIDI file: ") + output_midi_path);
+        *out_summary = to_c_summary(audio, result);
+        return 0;
+    } catch (const std::exception& error) {
+        return set_error(error.what());
+    }
+}
+
+int music_elf_process_wav_to_outputs(
+    const char* input_wav_path,
+    const char* output_midi_path,
+    const char* output_musicxml_path,
+    MusicElfPipelineSummary* out_summary) {
+    try {
+        clear_error();
+        if (input_wav_path == nullptr) {
+            return set_error("input path must not be null");
         }
-        out.write(reinterpret_cast<const char*>(result.midi_bytes.data()),
-                  static_cast<std::streamsize>(result.midi_bytes.size()));
+        if (output_midi_path == nullptr && output_musicxml_path == nullptr && out_summary == nullptr) {
+            return set_error("at least one output path or summary output must be provided");
+        }
+
+        const auto audio = music_elf::read_wav_file(input_wav_path);
+        const auto result = music_elf::run_core_pipeline(audio);
+        if (output_midi_path != nullptr && write_binary_file(output_midi_path, result.midi_bytes) != 0) {
+            return -1;
+        }
+        if (output_musicxml_path != nullptr && write_text_file(output_musicxml_path, result.musicxml) != 0) {
+            return -1;
+        }
+        if (out_summary != nullptr) {
+            *out_summary = to_c_summary(audio, result);
+        }
         return 0;
     } catch (const std::exception& error) {
         return set_error(error.what());

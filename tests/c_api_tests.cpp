@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -28,6 +29,12 @@ std::vector<float> make_sine(int sample_rate, double seconds, double frequency_h
         samples[i] = static_cast<float>(0.5 * std::sin(2.0 * kPi * frequency_hz * time));
     }
     return samples;
+}
+
+bool file_contains(const std::string& path, const std::string& needle) {
+    std::ifstream in(path, std::ios::binary);
+    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return data.find(needle) != std::string::npos;
 }
 
 void test_c_pitch_detector() {
@@ -72,12 +79,44 @@ void test_c_wav_to_midi() {
     require(header[0] == 'M' && header[1] == 'T' && header[2] == 'h' && header[3] == 'd', "C MIDI header");
 }
 
+void test_c_pipeline_summary_and_exports() {
+    const std::string wav_path = "c_api_pipeline_input.wav";
+    const std::string midi_path = "c_api_pipeline_output.mid";
+    const std::string musicxml_path = "c_api_pipeline_output.musicxml";
+    const auto audio = music_elf::make_mono_audio(48000, make_sine(48000, 1.0, 440.0));
+    music_elf::write_wav_file(wav_path, audio);
+
+    MusicElfPipelineSummary analysis{};
+    require(music_elf_analyze_wav(wav_path.c_str(), &analysis) == 0, "C analyze WAV");
+    require(analysis.sample_rate == 48000, "C summary sample rate");
+    require(analysis.duration_seconds > 0.9 && analysis.duration_seconds < 1.1, "C summary duration");
+    require(analysis.pitch_frame_count > 100, "C summary pitch frames");
+    require(analysis.note_count >= 1, "C summary notes");
+
+    MusicElfPipelineSummary export_summary{};
+    require(music_elf_process_wav_to_outputs(
+                wav_path.c_str(),
+                midi_path.c_str(),
+                musicxml_path.c_str(),
+                &export_summary) == 0,
+            "C pipeline exports");
+    require(export_summary.midi_byte_count > 30, "C export MIDI byte count");
+    require(export_summary.musicxml_char_count > 100, "C export MusicXML char count");
+    require(file_contains(midi_path, "MThd"), "C export MIDI header");
+    require(file_contains(musicxml_path, "<score-partwise"), "C export MusicXML root");
+
+    std::remove(wav_path.c_str());
+    std::remove(midi_path.c_str());
+    std::remove(musicxml_path.c_str());
+}
+
 }  // namespace
 
 int main() {
     try {
         test_c_pitch_detector();
         test_c_wav_to_midi();
+        test_c_pipeline_summary_and_exports();
     } catch (const std::exception& error) {
         std::cerr << "c_api_tests failed: " << error.what() << '\n';
         return EXIT_FAILURE;
@@ -86,4 +125,3 @@ int main() {
     std::cout << "c_api_tests passed\n";
     return EXIT_SUCCESS;
 }
-

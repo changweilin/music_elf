@@ -1,6 +1,8 @@
 #include "music_elf/core_pipeline.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <stdexcept>
 
 namespace music_elf {
@@ -44,23 +46,42 @@ std::vector<NoteEvent> segment_notes(
 }
 
 std::vector<GeneratedNote> make_midi_notes(
-    const std::vector<NoteEvent>& melody,
+    const RhythmAnalysis& rhythm,
     const std::vector<NoteDynamics>& dynamics,
     const std::vector<GeneratedNote>& accompaniment,
     const MidiWriterConfig& config) {
     std::vector<GeneratedNote> notes;
-    notes.reserve(melody.size() + accompaniment.size());
-    for (std::size_t i = 0; i < melody.size(); ++i) {
+    notes.reserve(rhythm.quantized_notes.size() + accompaniment.size());
+    for (std::size_t i = 0; i < rhythm.quantized_notes.size(); ++i) {
+        const QuantizedNote& quantized = rhythm.quantized_notes[i];
         GeneratedNote note;
-        note.start_seconds = melody[i].start_seconds;
-        note.end_seconds = melody[i].end_seconds;
-        note.midi_note = melody[i].midi_note;
+        note.start_seconds = quantized.start_beats * rhythm.beat_grid.beat_duration_seconds;
+        note.end_seconds =
+            note.start_seconds + quantized.duration_beats * rhythm.beat_grid.beat_duration_seconds;
+        note.midi_note = quantized.note.midi_note;
         note.velocity = i < dynamics.size() ? dynamics[i].velocity : config.melody_velocity;
         note.channel = config.melody_channel;
         notes.push_back(note);
     }
-    notes.insert(notes.end(), accompaniment.begin(), accompaniment.end());
+
+    const double offset = rhythm.beat_grid.first_beat_seconds;
+    for (GeneratedNote note : accompaniment) {
+        note.start_seconds = std::max(0.0, note.start_seconds - offset);
+        note.end_seconds = std::max(note.start_seconds, note.end_seconds - offset);
+        notes.push_back(note);
+    }
     return notes;
+}
+
+int key_signature_fifths(const KeyEstimate& key) {
+    constexpr std::array<int, 12> kMajorFifths = {
+        0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5};
+    constexpr std::array<int, 12> kMinorFifths = {
+        -3, 4, -1, 6, 1, -4, 3, -2, 5, 0, -5, 2};
+    const int pitch_class = ((key.tonic_pitch_class % 12) + 12) % 12;
+    return key.mode == ScaleMode::Minor
+               ? kMinorFifths[static_cast<std::size_t>(pitch_class)]
+               : kMajorFifths[static_cast<std::size_t>(pitch_class)];
 }
 
 }  // namespace
@@ -76,6 +97,11 @@ CorePipelineResult run_core_pipeline(
     CorePipelineConfig local_config = config;
     local_config.pitch.sample_rate = audio.sample_rate;
     local_config.dynamics.sample_rate = audio.sample_rate;
+    local_config.rhythm.beats_per_bar = local_config.musicxml.time_signature_numerator;
+    local_config.rhythm.subdivisions_per_beat = std::max(
+        1,
+        local_config.musicxml.minimum_note_value_denominator /
+            std::max(1, local_config.musicxml.time_signature_denominator));
 
     CorePipelineResult result;
     const std::vector<float> mono = downmix_to_mono(audio);
@@ -109,14 +135,19 @@ CorePipelineResult run_core_pipeline(
     }
 
     local_config.midi.bpm = result.rhythm.beat_grid.bpm;
+    local_config.musicxml.bpm = result.rhythm.beat_grid.bpm;
+    local_config.musicxml.key_signature_fifths = key_signature_fifths(result.key);
+    local_config.musicxml.key_signature_is_minor = result.key.mode == ScaleMode::Minor;
+    local_config.midi.key_signature_fifths = local_config.musicxml.key_signature_fifths;
+    local_config.midi.key_signature_is_minor = local_config.musicxml.key_signature_is_minor;
+    local_config.midi.time_signature_numerator = local_config.musicxml.time_signature_numerator;
+    local_config.midi.time_signature_denominator = local_config.musicxml.time_signature_denominator;
     const std::vector<GeneratedNote> midi_notes =
-        make_midi_notes(result.notes, result.dynamics, result.accompaniment_notes, local_config.midi);
+        make_midi_notes(result.rhythm, result.dynamics, result.accompaniment_notes, local_config.midi);
     result.midi_bytes = write_midi(midi_notes.data(), midi_notes.size(), local_config.midi);
 
-    local_config.musicxml.bpm = result.rhythm.beat_grid.bpm;
     result.musicxml = write_musicxml(
-        result.notes.data(),
-        result.notes.size(),
+        result.rhythm,
         result.lyric_alignments.data(),
         result.lyric_alignments.size(),
         local_config.musicxml);
@@ -125,4 +156,3 @@ CorePipelineResult run_core_pipeline(
 }
 
 }  // namespace music_elf
-

@@ -62,6 +62,12 @@ void test_pipeline_from_wav_to_exports() {
     require(!result.lyric_alignments.empty(), "pipeline should align lyrics");
     require(result.midi_bytes.size() > 30, "pipeline should produce MIDI bytes");
     require(result.musicxml.find("<score-partwise") != std::string::npos, "pipeline should produce MusicXML");
+    require(result.musicxml.find("<measure number=\"2\">") != std::string::npos, "pipeline score should have measures");
+    require(result.musicxml.find("<key><fifths>") != std::string::npos, "pipeline score should have key");
+    require(result.musicxml.find("<time><beats>4</beats><beat-type>4</beat-type></time>") != std::string::npos,
+            "pipeline score should have time signature");
+    require(result.musicxml.find("<clef><sign>G</sign><line>2</line></clef>") != std::string::npos,
+            "pipeline score should have treble clef");
     require(result.midi_bytes[0] == 'M' && result.midi_bytes[1] == 'T', "MIDI header");
 }
 
@@ -78,4 +84,3 @@ int main() {
     std::cout << "pipeline_integration_tests passed\n";
     return EXIT_SUCCESS;
 }
-

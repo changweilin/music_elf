@@ -5,11 +5,13 @@ project(music_elf VERSION 0.1.0 LANGUAGES CXX)
 add_library(music_elf_core STATIC
     src/accompaniment_generator.cpp
     src/audio_io.cpp
+    src/audio_renderer.cpp
     src/c_api.cpp
     src/core_pipeline.cpp
     src/dynamics_analyzer.cpp
     src/harmony_analyzer.cpp
     src/lyric_aligner.cpp
+    src/midi_catalog.cpp
     src/midi_writer.cpp
     src/model_interfaces.cpp
     src/musicxml_writer.cpp
@@ -63,11 +65,14 @@ if(BUILD_TESTING)
     add_music_elf_test(rhythm_dynamics_tests tests/rhythm_dynamics_tests.cpp)
     add_music_elf_test(harmony_tests tests/harmony_tests.cpp)
     add_music_elf_test(arrangement_midi_tests tests/arrangement_midi_tests.cpp)
+    add_music_elf_test(audio_renderer_tests tests/audio_renderer_tests.cpp)
     add_music_elf_test(lyrics_musicxml_tests tests/lyrics_musicxml_tests.cpp)
     add_music_elf_test(audio_io_tests tests/audio_io_tests.cpp)
     add_music_elf_test(pipeline_integration_tests tests/pipeline_integration_tests.cpp)
     add_music_elf_test(c_api_tests tests/c_api_tests.cpp)
     add_music_elf_test(model_interfaces_tests tests/model_interfaces_tests.cpp)
+    add_music_elf_test(midi_catalog_tests tests/midi_catalog_tests.cpp)
+    add_music_elf_test(export_snapshot_tests tests/export_snapshot_tests.cpp)
 
     add_executable(cli_end_to_end_tests tests/cli_end_to_end_tests.cpp)
     target_link_libraries(cli_end_to_end_tests PRIVATE music_elf_core)

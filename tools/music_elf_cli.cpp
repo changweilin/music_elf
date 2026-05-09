@@ -1,8 +1,14 @@
+#include "music_elf/audio_renderer.hpp"
 #include "music_elf/core_pipeline.hpp"
+#include "music_elf/midi_catalog.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -11,13 +17,37 @@
 namespace {
 
 using music_elf::AccompanimentPattern;
+using music_elf::AudioRendererConfig;
+using music_elf::CatalogChordType;
+using music_elf::CatalogRoot;
 using music_elf::CorePipelineConfig;
+using music_elf::GmInstrument;
 using music_elf::LyricToken;
+using music_elf::MidiCatalogConfig;
+
+struct PipelineOptions {
+    std::vector<LyricToken> lyrics;
+    CorePipelineConfig config;
+};
 
 void print_usage() {
     std::cout
         << "Usage: music_elf_cli <input.wav> [--out-midi file.mid] [--out-musicxml file.musicxml]\n"
-        << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n";
+        << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
+        << "       music_elf_cli inspect <input.wav> [--out-summary file]\n"
+        << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
+        << "       music_elf_cli benchmark <input.wav> [--iterations count] [--out-summary file]\n"
+        << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
+        << "       music_elf_cli render-preview <input.wav> [--out-wav preview.wav]\n"
+        << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
+        << "                     [--waveform sine|square|saw|triangle]\n"
+        << "       music_elf_cli generate-catalog [--out-dir dir]\n"
+        << "                     [--instruments all|0,40] [--roots all|C,D,E]\n"
+        << "                     [--chords all|major,minor,dom7] [--duration seconds]\n"
+        << "                     [--bpm bpm] [--octave octave]\n"
+        << "       music_elf_cli render-demo [--out-wav preview.wav]\n"
+        << "                     [--program 0] [--root C] [--chord major]\n"
+        << "                     [--waveform sine|square|saw|triangle]\n";
 }
 
 std::vector<LyricToken> split_lyrics(const std::string& text) {
@@ -46,6 +76,41 @@ AccompanimentPattern parse_pattern(const std::string& value) {
     throw std::invalid_argument("unknown pattern: " + value);
 }
 
+music_elf::PreviewWaveform parse_waveform(const std::string& value) {
+    if (value == "sine") {
+        return music_elf::PreviewWaveform::Sine;
+    }
+    if (value == "square") {
+        return music_elf::PreviewWaveform::Square;
+    }
+    if (value == "saw") {
+        return music_elf::PreviewWaveform::Saw;
+    }
+    if (value == "triangle") {
+        return music_elf::PreviewWaveform::Triangle;
+    }
+    throw std::invalid_argument("unknown waveform: " + value);
+}
+
+std::string require_value(int& index, int argc, char** argv, const std::string& arg) {
+    if (index + 1 >= argc) {
+        throw std::invalid_argument("missing value for argument: " + arg);
+    }
+    return argv[++index];
+}
+
+bool parse_pipeline_option(const std::string& arg, int& index, int argc, char** argv, PipelineOptions& options) {
+    if (arg == "--lyrics") {
+        options.lyrics = split_lyrics(require_value(index, argc, argv, arg));
+        return true;
+    }
+    if (arg == "--pattern") {
+        options.config.accompaniment.pattern = parse_pattern(require_value(index, argc, argv, arg));
+        return true;
+    }
+    return false;
+}
+
 void write_binary_file(const std::string& path, const std::vector<std::uint8_t>& bytes) {
     std::ofstream out(path, std::ios::binary);
     if (!out) {
@@ -62,6 +127,400 @@ void write_text_file(const std::string& path, const std::string& text) {
     out << text;
 }
 
+std::vector<std::string> split_csv(const std::string& value) {
+    std::vector<std::string> items;
+    std::stringstream stream(value);
+    std::string item;
+    while (std::getline(stream, item, ',')) {
+        if (!item.empty()) {
+            items.push_back(item);
+        }
+    }
+    return items;
+}
+
+std::vector<GmInstrument> select_instruments(const std::string& value) {
+    const auto& all = music_elf::gm_instruments();
+    if (value == "all") {
+        return all;
+    }
+
+    std::vector<GmInstrument> selected;
+    for (const auto& item : split_csv(value)) {
+        const int program = std::stoi(item);
+        const auto found = std::find_if(
+            all.begin(),
+            all.end(),
+            [program](const GmInstrument& instrument) {
+                return instrument.program == program;
+            });
+        if (found == all.end()) {
+            throw std::invalid_argument("unknown GM program: " + item);
+        }
+        selected.push_back(*found);
+    }
+    return selected;
+}
+
+std::vector<CatalogRoot> select_roots(const std::string& value) {
+    const auto& all = music_elf::catalog_roots();
+    if (value == "all") {
+        return all;
+    }
+
+    std::vector<CatalogRoot> selected;
+    for (const auto& item : split_csv(value)) {
+        const auto found = std::find_if(
+            all.begin(),
+            all.end(),
+            [&item](const CatalogRoot& root) {
+                return root.name == item;
+            });
+        if (found == all.end()) {
+            throw std::invalid_argument("unknown root: " + item);
+        }
+        selected.push_back(*found);
+    }
+    return selected;
+}
+
+std::vector<CatalogChordType> select_chords(const std::string& value) {
+    const auto& all = music_elf::catalog_chord_types();
+    if (value == "all") {
+        return all;
+    }
+
+    std::vector<CatalogChordType> selected;
+    for (const auto& item : split_csv(value)) {
+        const auto found = std::find_if(
+            all.begin(),
+            all.end(),
+            [&item](const CatalogChordType& chord) {
+                return chord.id == item;
+            });
+        if (found == all.end()) {
+            throw std::invalid_argument("unknown chord type: " + item);
+        }
+        selected.push_back(*found);
+    }
+    return selected;
+}
+
+std::vector<music_elf::GeneratedNote> make_preview_notes(
+    const music_elf::CorePipelineResult& result,
+    const CorePipelineConfig& config) {
+    std::vector<music_elf::GeneratedNote> notes;
+    notes.reserve(result.notes.size() + result.accompaniment_notes.size());
+    for (std::size_t i = 0; i < result.notes.size(); ++i) {
+        music_elf::GeneratedNote note;
+        note.start_seconds = result.notes[i].start_seconds;
+        note.end_seconds = result.notes[i].end_seconds;
+        note.midi_note = result.notes[i].midi_note;
+        note.velocity = i < result.dynamics.size() ? result.dynamics[i].velocity : config.midi.melody_velocity;
+        note.channel = config.midi.melody_channel;
+        notes.push_back(note);
+    }
+    notes.insert(notes.end(), result.accompaniment_notes.begin(), result.accompaniment_notes.end());
+    return notes;
+}
+
+void write_pipeline_summary(
+    std::ostream& out,
+    const std::string& command,
+    const std::string& input_path,
+    const music_elf::AudioBuffer& audio,
+    const music_elf::CorePipelineResult& result) {
+    const std::size_t frames = audio.channels > 0
+                                   ? audio.samples.size() / static_cast<std::size_t>(audio.channels)
+                                   : 0;
+    const double duration_seconds = audio.sample_rate > 0
+                                        ? static_cast<double>(frames) / static_cast<double>(audio.sample_rate)
+                                        : 0.0;
+    const auto voiced_frames = std::count_if(
+        result.pitch_estimates.begin(),
+        result.pitch_estimates.end(),
+        [](const music_elf::PitchEstimate& estimate) {
+            return estimate.voiced;
+        });
+
+    out << std::fixed << std::setprecision(3);
+    out << "command: " << command << "\n";
+    out << "input: " << input_path << "\n";
+    out << "sample_rate: " << audio.sample_rate << "\n";
+    out << "channels: " << audio.channels << "\n";
+    out << "duration_seconds: " << duration_seconds << "\n";
+    out << "pitch_frames: " << result.pitch_estimates.size() << "\n";
+    out << "voiced_pitch_frames: " << voiced_frames << "\n";
+    out << "notes: " << result.notes.size() << "\n";
+    out << "estimated_bpm: " << result.rhythm.beat_grid.bpm << "\n";
+    out << "key: " << music_elf::note_name(result.key.tonic_pitch_class) << " "
+        << music_elf::scale_mode_name(result.key.mode) << "\n";
+    out << "key_confidence: " << result.key.confidence << "\n";
+    out << "chord_progressions: " << result.chord_progressions.size() << "\n";
+    if (!result.chord_progressions.empty() && !result.chord_progressions.front().chords.empty()) {
+        out << "top_progression_style: "
+            << music_elf::harmony_style_name(result.chord_progressions.front().style) << "\n";
+        out << "first_chord: " << music_elf::chord_symbol(result.chord_progressions.front().chords.front())
+            << "\n";
+    }
+    out << "accompaniment_notes: " << result.accompaniment_notes.size() << "\n";
+    out << "lyric_alignments: " << result.lyric_alignments.size() << "\n";
+    out << "midi_bytes: " << result.midi_bytes.size() << "\n";
+    out << "musicxml_chars: " << result.musicxml.size() << "\n";
+}
+
+void emit_summary(const std::string& summary, const std::string& output_path) {
+    std::cout << summary;
+    if (!output_path.empty()) {
+        write_text_file(output_path, summary);
+    }
+}
+
+int run_inspect(int argc, char** argv) {
+    if (argc < 3) {
+        throw std::invalid_argument("inspect requires an input WAV path");
+    }
+    std::string input_path = argv[2];
+    std::string out_summary;
+    PipelineOptions options;
+
+    for (int i = 3; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+        if (arg == "--out-summary") {
+            out_summary = require_value(i, argc, argv, arg);
+        } else if (!parse_pipeline_option(arg, i, argc, argv, options)) {
+            throw std::invalid_argument("unknown or incomplete argument: " + arg);
+        }
+    }
+
+    const auto audio = music_elf::read_wav_file(input_path);
+    const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
+
+    std::ostringstream summary;
+    write_pipeline_summary(summary, "inspect", input_path, audio, result);
+    emit_summary(summary.str(), out_summary);
+    return 0;
+}
+
+int run_benchmark(int argc, char** argv) {
+    if (argc < 3) {
+        throw std::invalid_argument("benchmark requires an input WAV path");
+    }
+    std::string input_path = argv[2];
+    std::string out_summary;
+    int iterations = 3;
+    PipelineOptions options;
+
+    for (int i = 3; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+        if (arg == "--iterations") {
+            iterations = std::stoi(require_value(i, argc, argv, arg));
+        } else if (arg == "--out-summary") {
+            out_summary = require_value(i, argc, argv, arg);
+        } else if (!parse_pipeline_option(arg, i, argc, argv, options)) {
+            throw std::invalid_argument("unknown or incomplete argument: " + arg);
+        }
+    }
+    if (iterations <= 0) {
+        throw std::invalid_argument("iterations must be positive");
+    }
+
+    const auto audio = music_elf::read_wav_file(input_path);
+    music_elf::CorePipelineResult last_result;
+    double total_ms = 0.0;
+    double min_ms = std::numeric_limits<double>::max();
+    double max_ms = 0.0;
+
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+        const auto start = std::chrono::steady_clock::now();
+        last_result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
+        const auto stop = std::chrono::steady_clock::now();
+        const double elapsed_ms =
+            std::chrono::duration<double, std::milli>(stop - start).count();
+        total_ms += elapsed_ms;
+        min_ms = std::min(min_ms, elapsed_ms);
+        max_ms = std::max(max_ms, elapsed_ms);
+    }
+
+    std::ostringstream summary;
+    write_pipeline_summary(summary, "benchmark", input_path, audio, last_result);
+    summary << std::fixed << std::setprecision(3);
+    summary << "benchmark_iterations: " << iterations << "\n";
+    summary << "benchmark_average_ms: " << (total_ms / static_cast<double>(iterations)) << "\n";
+    summary << "benchmark_min_ms: " << min_ms << "\n";
+    summary << "benchmark_max_ms: " << max_ms << "\n";
+    emit_summary(summary.str(), out_summary);
+    return 0;
+}
+
+int run_render_preview(int argc, char** argv) {
+    if (argc < 3) {
+        throw std::invalid_argument("render-preview requires an input WAV path");
+    }
+    std::string input_path = argv[2];
+    std::string out_wav = "music_elf_pipeline_preview.wav";
+    PipelineOptions options;
+    AudioRendererConfig render_config;
+
+    for (int i = 3; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+        if (arg == "--out-wav") {
+            out_wav = require_value(i, argc, argv, arg);
+        } else if (arg == "--waveform") {
+            render_config.waveform = parse_waveform(require_value(i, argc, argv, arg));
+        } else if (!parse_pipeline_option(arg, i, argc, argv, options)) {
+            throw std::invalid_argument("unknown or incomplete argument: " + arg);
+        }
+    }
+
+    const auto audio = music_elf::read_wav_file(input_path);
+    render_config.sample_rate = audio.sample_rate;
+    const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
+    const auto preview_notes = make_preview_notes(result, options.config);
+    const auto preview = music_elf::render_notes_to_audio(preview_notes.data(), preview_notes.size(), render_config);
+    music_elf::write_wav_file(out_wav, preview);
+
+    std::cout << "Rendered pipeline preview WAV\n";
+    std::cout << "Input: " << input_path << "\n";
+    std::cout << "Waveform: " << music_elf::preview_waveform_name(render_config.waveform) << "\n";
+    std::cout << "Preview notes: " << preview_notes.size() << "\n";
+    std::cout << "Output: " << out_wav << "\n";
+    return 0;
+}
+
+int run_generate_catalog(int argc, char** argv) {
+    std::filesystem::path out_dir = "midi_catalog";
+    std::string instrument_filter = "all";
+    std::string root_filter = "all";
+    std::string chord_filter = "all";
+    MidiCatalogConfig config;
+
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+        if (arg == "--out-dir" && i + 1 < argc) {
+            out_dir = require_value(i, argc, argv, arg);
+        } else if (arg == "--instruments" && i + 1 < argc) {
+            instrument_filter = require_value(i, argc, argv, arg);
+        } else if (arg == "--roots" && i + 1 < argc) {
+            root_filter = require_value(i, argc, argv, arg);
+        } else if (arg == "--chords" && i + 1 < argc) {
+            chord_filter = require_value(i, argc, argv, arg);
+        } else if (arg == "--duration" && i + 1 < argc) {
+            config.duration_seconds = std::stod(require_value(i, argc, argv, arg));
+        } else if (arg == "--bpm" && i + 1 < argc) {
+            config.bpm = std::stod(require_value(i, argc, argv, arg));
+        } else if (arg == "--octave" && i + 1 < argc) {
+            config.root_octave = std::stoi(require_value(i, argc, argv, arg));
+        } else {
+            throw std::invalid_argument("unknown or incomplete argument: " + arg);
+        }
+    }
+
+    const auto instruments = select_instruments(instrument_filter);
+    const auto roots = select_roots(root_filter);
+    const auto chords = select_chords(chord_filter);
+    std::filesystem::create_directories(out_dir);
+
+    std::size_t written = 0;
+    for (const auto& instrument : instruments) {
+        const std::filesystem::path instrument_dir =
+            out_dir / (std::to_string(instrument.program) + "_" + instrument.name);
+        std::filesystem::create_directories(instrument_dir);
+        for (const auto& root : roots) {
+            for (const auto& chord : chords) {
+                const auto bytes = music_elf::make_catalog_chord_midi(instrument, root, chord, config);
+                const std::filesystem::path path =
+                    instrument_dir / music_elf::midi_catalog_file_name(instrument, root, chord);
+                write_binary_file(path.string(), bytes);
+                written += 1;
+            }
+        }
+    }
+
+    std::cout << "Generated MIDI catalog\n";
+    std::cout << "Output dir: " << out_dir.string() << "\n";
+    std::cout << "Instruments: " << instruments.size() << "\n";
+    std::cout << "Roots: " << roots.size() << "\n";
+    std::cout << "Chord types: " << chords.size() << "\n";
+    std::cout << "Files: " << written << "\n";
+    return 0;
+}
+
+int run_render_demo(int argc, char** argv) {
+    std::string out_wav = "music_elf_preview.wav";
+    int program = 0;
+    std::string root_name = "C";
+    std::string chord_id = "major";
+    MidiCatalogConfig catalog_config;
+    AudioRendererConfig render_config;
+
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+        if (arg == "--out-wav" && i + 1 < argc) {
+            out_wav = require_value(i, argc, argv, arg);
+        } else if (arg == "--program" && i + 1 < argc) {
+            program = std::stoi(require_value(i, argc, argv, arg));
+        } else if (arg == "--root" && i + 1 < argc) {
+            root_name = require_value(i, argc, argv, arg);
+        } else if (arg == "--chord" && i + 1 < argc) {
+            chord_id = require_value(i, argc, argv, arg);
+        } else if (arg == "--waveform" && i + 1 < argc) {
+            render_config.waveform = parse_waveform(require_value(i, argc, argv, arg));
+        } else {
+            throw std::invalid_argument("unknown or incomplete argument: " + arg);
+        }
+    }
+
+    const auto instruments = select_instruments(std::to_string(program));
+    const auto roots = select_roots(root_name);
+    const auto chords = select_chords(chord_id);
+    const GmInstrument& instrument = instruments.front();
+    const CatalogRoot& root = roots.front();
+    const CatalogChordType& chord = chords.front();
+
+    const int root_midi = (catalog_config.root_octave + 1) * 12 + root.pitch_class;
+    std::vector<music_elf::GeneratedNote> notes;
+    for (int interval : chord.intervals) {
+        music_elf::GeneratedNote note;
+        note.start_seconds = 0.0;
+        note.end_seconds = catalog_config.duration_seconds;
+        note.midi_note = root_midi + interval;
+        note.velocity = catalog_config.velocity;
+        note.channel = catalog_config.channel;
+        notes.push_back(note);
+    }
+
+    const auto audio = music_elf::render_notes_to_audio(notes.data(), notes.size(), render_config);
+    music_elf::write_wav_file(out_wav, audio);
+
+    std::cout << "Rendered preview WAV\n";
+    std::cout << "Program: " << instrument.program << " " << instrument.name << "\n";
+    std::cout << "Chord: " << root.name << " " << chord.display_name << "\n";
+    std::cout << "Waveform: " << music_elf::preview_waveform_name(render_config.waveform) << "\n";
+    std::cout << "Output: " << out_wav << "\n";
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -70,14 +529,28 @@ int main(int argc, char** argv) {
             print_usage();
             return argc < 2 ? 1 : 0;
         }
+        if (std::string(argv[1]) == "generate-catalog") {
+            return run_generate_catalog(argc, argv);
+        }
+        if (std::string(argv[1]) == "render-demo") {
+            return run_render_demo(argc, argv);
+        }
+        if (std::string(argv[1]) == "inspect") {
+            return run_inspect(argc, argv);
+        }
+        if (std::string(argv[1]) == "benchmark") {
+            return run_benchmark(argc, argv);
+        }
+        if (std::string(argv[1]) == "render-preview") {
+            return run_render_preview(argc, argv);
+        }
 
         std::string input_path = argv[1];
         std::filesystem::path base(input_path);
         std::string out_midi = base.replace_extension(".mid").string();
         base = std::filesystem::path(input_path);
         std::string out_musicxml = base.replace_extension(".musicxml").string();
-        std::vector<LyricToken> lyrics;
-        CorePipelineConfig config;
+        PipelineOptions options;
 
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];
@@ -86,20 +559,17 @@ int main(int argc, char** argv) {
                 return 0;
             }
             if (arg == "--out-midi" && i + 1 < argc) {
-                out_midi = argv[++i];
+                out_midi = require_value(i, argc, argv, arg);
             } else if (arg == "--out-musicxml" && i + 1 < argc) {
-                out_musicxml = argv[++i];
-            } else if (arg == "--lyrics" && i + 1 < argc) {
-                lyrics = split_lyrics(argv[++i]);
-            } else if (arg == "--pattern" && i + 1 < argc) {
-                config.accompaniment.pattern = parse_pattern(argv[++i]);
+                out_musicxml = require_value(i, argc, argv, arg);
+            } else if (parse_pipeline_option(arg, i, argc, argv, options)) {
             } else {
                 throw std::invalid_argument("unknown or incomplete argument: " + arg);
             }
         }
 
         const auto audio = music_elf::read_wav_file(input_path);
-        const auto result = music_elf::run_core_pipeline(audio, lyrics, config);
+        const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
 
         write_binary_file(out_midi, result.midi_bytes);
         write_text_file(out_musicxml, result.musicxml);

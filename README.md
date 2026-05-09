@@ -26,6 +26,53 @@ build\Release\music_elf_cli.exe input.wav --out-midi output.mid --out-musicxml o
 
 Supported accompaniment patterns are `block`, `arpeggio`, `broken`, and `pad`.
 
+It can also generate a General MIDI chord catalog:
+
+```powershell
+build\Release\music_elf_cli.exe generate-catalog --out-dir generated\midi_catalog --instruments all --roots all --chords all
+```
+
+For a smaller subset:
+
+```powershell
+build\Release\music_elf_cli.exe generate-catalog --out-dir generated\midi_catalog --instruments 0,40 --roots C,D --chords major,minor,dom7
+```
+
+The catalog command writes `.mid` files for General MIDI instruments, roots, and
+common chord types. MIDI files are performance instructions, not rendered audio;
+turning them into `.wav` or `.mp3` still requires a synth or SoundFont renderer.
+
+For a lightweight built-in preview without external dependencies:
+
+```powershell
+build\Release\music_elf_cli.exe render-demo --out-wav preview.wav --program 0 --root C --chord major
+```
+
+This preview renderer uses simple oscillators rather than real instrument
+samples. It is intended for fast product validation before adding SoundFont or
+sample-library rendering.
+
+To inspect a WAV without writing MIDI/MusicXML files:
+
+```powershell
+build\Release\music_elf_cli.exe inspect input.wav --out-summary inspect.txt --lyrics "I can sing" --pattern block
+```
+
+To render the actual pipeline notes to a built-in preview WAV:
+
+```powershell
+build\Release\music_elf_cli.exe render-preview input.wav --out-wav preview.wav --waveform triangle --pattern arpeggio
+```
+
+To capture a small runtime baseline:
+
+```powershell
+build\Release\music_elf_cli.exe benchmark input.wav --iterations 5 --out-summary benchmark.txt
+```
+
+The benchmark command emits deterministic pipeline counts plus measured
+`benchmark_average_ms`, `benchmark_min_ms`, and `benchmark_max_ms` fields.
+
 ## Core Pipeline
 
 The implemented non-UI core follows the docs pipeline:
@@ -37,7 +84,7 @@ mono float32 PCM
   -> rhythm quantization + note dynamics
   -> key detection + chord progression candidates
   -> simple accompaniment patterns
-  -> MIDI / MusicXML export
+  -> quantized MIDI / MusicXML lead-sheet export
 ```
 
 See `docs/algorithm_flow_status.md` for a status flowchart that marks completed,
@@ -74,20 +121,31 @@ Harmony and arrangement:
 - `include/music_elf/harmony_analyzer.hpp` detects key and generates multiple
   style-based chord progression candidates.
 - `include/music_elf/accompaniment_generator.hpp` generates block chord,
-  arpeggio, broken chord, and pad accompaniment notes.
+  arpeggio, broken chord, pad, and bass+chord accompaniment notes with optional
+  inversion, range limits, and simple voice leading.
 
 Lyrics and export:
 
 - `include/music_elf/audio_io.hpp` reads PCM/float WAV files, writes PCM16 WAV,
   and downmixes to mono.
+- `include/music_elf/audio_renderer.hpp` renders generated notes to a simple
+  built-in mono WAV preview.
 - `include/music_elf/core_pipeline.hpp` runs the end-to-end non-UI pipeline.
+- `include/music_elf/midi_catalog.hpp` generates General MIDI chord catalog
+  files across instruments, roots, and common chord types.
 - `include/music_elf/lyric_aligner.hpp` aligns known lyric tokens to extracted
   notes deterministically. It is not ASR.
 - `include/music_elf/midi_writer.hpp` exports Standard MIDI files in memory.
-- `include/music_elf/musicxml_writer.hpp` exports simple MusicXML strings.
-- `include/music_elf/c_api.h` exposes a small C ABI for app embedding.
+- `include/music_elf/musicxml_writer.hpp` exports quantized single-part
+  MusicXML with measures, rests, ties, lyrics, key signature, time signature,
+  and treble clef.
+- `include/music_elf/c_api.h` exposes C ABI helpers for pitch detection,
+  WAV-to-MIDI export, pipeline summaries, and MIDI/MusicXML file export.
 - `include/music_elf/model_interfaces.hpp` defines explicit interfaces for
   model-backed features that are not part of the deterministic MVP core.
+
+Model-backed integration schemas are documented in
+`docs/model_integration_schemas.md`.
 
 ## Current Limits
 

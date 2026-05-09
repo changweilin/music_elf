@@ -28,6 +28,24 @@ typedef struct MusicElfPitchEstimate {
     int voiced;
 } MusicElfPitchEstimate;
 
+typedef struct MusicElfPipelineSummary {
+    int sample_rate;
+    int channels;
+    double duration_seconds;
+    size_t pitch_frame_count;
+    size_t voiced_pitch_frame_count;
+    size_t note_count;
+    double estimated_bpm;
+    int key_tonic_pitch_class;
+    int key_is_minor;
+    float key_confidence;
+    size_t chord_progression_count;
+    size_t accompaniment_note_count;
+    size_t lyric_alignment_count;
+    size_t midi_byte_count;
+    size_t musicxml_char_count;
+} MusicElfPipelineSummary;
+
 MusicElfPitchDetectorConfig music_elf_default_pitch_detector_config(void);
 
 int music_elf_pitch_detector_create(
@@ -46,6 +64,14 @@ int music_elf_pitch_detector_process(
 
 int music_elf_process_wav_to_midi(const char* input_wav_path, const char* output_midi_path);
 
+int music_elf_analyze_wav(const char* input_wav_path, MusicElfPipelineSummary* out_summary);
+
+int music_elf_process_wav_to_outputs(
+    const char* input_wav_path,
+    const char* output_midi_path,
+    const char* output_musicxml_path,
+    MusicElfPipelineSummary* out_summary);
+
 const char* music_elf_last_error(void);
 
 #ifdef __cplusplus
@@ -53,4 +79,3 @@ const char* music_elf_last_error(void);
 #endif
 
 #endif  // MUSIC_ELF_C_API_H
-
