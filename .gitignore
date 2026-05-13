@@ -2,4 +2,5 @@ build/
 out/
 .vs/
 CMakeUserPresets.json
-
+node_modules/
+npm-debug.log*

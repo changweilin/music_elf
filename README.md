@@ -1,13 +1,52 @@
 # Music Elf
 
-Native C++ core for realtime monophonic singing analysis, note extraction,
-harmonization, accompaniment generation, and editable score export.
+> 以 C++17 撰寫的原生音樂分析核心，將單聲道歌唱錄音轉換為可編輯的樂譜、MIDI 與伴奏。
 
-## Build and Test on Windows
+## 專案簡介
 
-This repository is configured for C++17 with CMake and CTest. On the current
-Windows development machine, Visual Studio Community 2022 provides both MSVC and
-CMake.
+**Music Elf** 是一套專注於「歌聲到樂譜」轉換的原生 C++ 核心程式庫。它接收單聲道浮點數 PCM 音訊輸入，依序執行即時音高偵測、音符切分、節奏量化、力度分析、調性辨識與和弦進行推斷，最終輸出可在 DAW 與譜面編輯軟體中直接使用的 **Standard MIDI** 與 **MusicXML 主旋律譜（Lead Sheet）**，並可進一步產生多種風格的伴奏聲部。
+
+本專案以**確定性、可測試、無外部相依**為核心設計原則，所有分析流程皆為純 C++17 演算法，並透過 C ABI 對外公開呼叫介面，方便整合至跨平台應用、外掛或前端 UI。
+
+---
+
+## 核心功能特性
+
+- 🎤 **即時音高偵測**：基於 YIN 演算法的串流式單聲道音高擷取，回報音高、最接近 MIDI 音符、音分偏差與信心度。
+- 🎵 **音符切分與量化**：將音高軌跡轉換為帶起訖時間、音高與力度資訊的 `NoteEvent`，並過濾不穩定的瞬態片段。
+- 🥁 **節奏與力度分析**：自動估算 BPM 與拍點網格，量化音符的開始時間與時值；同步計算每個音符的 RMS、峰值、MIDI velocity 與動態標記。
+- 🎼 **調性與和聲分析**：偵測樂曲調性，並產生多組基於不同風格的候選和弦進行。
+- 🎹 **伴奏自動產生**：內建 `block`、`arpeggio`、`broken`、`pad` 等多種伴奏型態，支援轉位、音域限制與簡易聲部進行。
+- 📝 **歌詞對齊**：以確定性演算法將已知歌詞 token 對齊至擷取出的音符（非自動語音辨識）。
+- 📤 **多格式輸出**：可匯出 Standard MIDI、量化後的 MusicXML 主旋律譜（含小節、休止符、連結線、歌詞、和弦符號、調號、拍號與高音譜記號）。
+- 🔊 **內建預覽渲染器**：以簡易振盪器產生 WAV 預覽，無須 SoundFont 或外部音色庫即可快速驗收結果。
+- 📚 **General MIDI 和弦資料庫**：批次產生跨樂器、跨根音、跨和弦類型的 `.mid` 範例檔。
+- 🔌 **C ABI 對外介面**：透過 `include/music_elf/c_api.h` 暴露完整 C 介面，方便外部語言與 UI 框架整合。
+
+---
+
+## 系統需求與安裝步驟
+
+### 系統需求
+
+| 項目 | 版本 / 說明 |
+| --- | --- |
+| 編譯器 | 支援 C++17 的編譯器（MSVC 19.20+ / GCC 9+ / Clang 10+） |
+| 建置工具 | CMake 3.20 或更高版本 |
+| 測試框架 | CTest（隨 CMake 一同安裝） |
+| 推薦環境 (Windows) | Visual Studio Community 2022（內含 MSVC 與 CMake） |
+| 外部相依 | 無，全部以標準函式庫實作 |
+
+### 取得原始碼
+
+```powershell
+git clone <repository-url> music_elf
+cd music_elf
+```
+
+### Windows（Visual Studio 2022 / PowerShell）
+
+下列指令會依序執行 **設定（configure）→ 建置（build）→ 測試（test）**：
 
 ```powershell
 cmd /c "call ""C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"" && ""C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"" -S . -B build -G ""Visual Studio 17 2022"" -A x64"
@@ -15,141 +54,205 @@ cmd /c "call ""C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxili
 cmd /c "call ""C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"" && cd build && ""C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"" -C Release --output-on-failure"
 ```
 
-## CLI Demo
+建置完成後，CLI 執行檔位於 `build\Release\music_elf_cli.exe`。
 
-The `music_elf_cli` executable runs the native pipeline from a WAV file to
-editable outputs:
+### Linux / macOS
 
-```powershell
-build\Release\music_elf_cli.exe input.wav --out-midi output.mid --out-musicxml output.musicxml --lyrics "I can sing" --pattern arpeggio
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j
+ctest --test-dir build --output-on-failure
 ```
 
-Supported accompaniment patterns are `block`, `arpeggio`, `broken`, and `pad`.
+CLI 執行檔位於 `build/music_elf_cli`。
 
-It can also generate a General MIDI chord catalog:
+---
 
-```powershell
-build\Release\music_elf_cli.exe generate-catalog --out-dir generated\midi_catalog --instruments all --roots all --chords all
-```
+## 快速上手與使用範例
 
-For a smaller subset:
+下列範例皆以 Windows PowerShell 路徑為例；Linux/macOS 請將 `build\Release\music_elf_cli.exe` 替換為 `./build/music_elf_cli`。
 
-```powershell
-build\Release\music_elf_cli.exe generate-catalog --out-dir generated\midi_catalog --instruments 0,40 --roots C,D --chords major,minor,dom7
-```
-
-The catalog command writes `.mid` files for General MIDI instruments, roots, and
-common chord types. MIDI files are performance instructions, not rendered audio;
-turning them into `.wav` or `.mp3` still requires a synth or SoundFont renderer.
-
-For a lightweight built-in preview without external dependencies:
+### 1. 從歌唱錄音產生 MIDI 與 MusicXML
 
 ```powershell
-build\Release\music_elf_cli.exe render-demo --out-wav preview.wav --program 0 --root C --chord major
+build\Release\music_elf_cli.exe input.wav `
+    --out-midi output.mid `
+    --out-musicxml output.musicxml `
+    --lyrics "I can sing" `
+    --pattern arpeggio
 ```
 
-This preview renderer uses simple oscillators rather than real instrument
-samples. It is intended for fast product validation before adding SoundFont or
-sample-library rendering.
+支援的 `--pattern` 伴奏類型：`block`、`arpeggio`、`broken`、`pad`。
 
-To inspect a WAV without writing MIDI/MusicXML files:
+### 2. 檢視 WAV 分析摘要（不輸出樂譜檔）
 
 ```powershell
-build\Release\music_elf_cli.exe inspect input.wav --out-summary inspect.txt --lyrics "I can sing" --pattern block
+build\Release\music_elf_cli.exe inspect input.wav `
+    --out-summary inspect.txt `
+    --lyrics "I can sing" `
+    --pattern block
 ```
 
-To render the actual pipeline notes to a built-in preview WAV:
+### 3. 將辨識結果渲染為預覽 WAV
 
 ```powershell
-build\Release\music_elf_cli.exe render-preview input.wav --out-wav preview.wav --waveform triangle --pattern arpeggio
+build\Release\music_elf_cli.exe render-preview input.wav `
+    --out-wav preview.wav `
+    --waveform triangle `
+    --pattern arpeggio
 ```
 
-To capture a small runtime baseline:
+### 4. 產生 General MIDI 和弦資料庫
 
 ```powershell
-build\Release\music_elf_cli.exe benchmark input.wav --iterations 5 --out-summary benchmark.txt
+build\Release\music_elf_cli.exe generate-catalog `
+    --out-dir generated\midi_catalog `
+    --instruments all --roots all --chords all
 ```
 
-The benchmark command emits deterministic pipeline counts plus measured
-`benchmark_average_ms`, `benchmark_min_ms`, and `benchmark_max_ms` fields.
+若僅需特定子集：
 
-## Core Pipeline
+```powershell
+build\Release\music_elf_cli.exe generate-catalog `
+    --out-dir generated\midi_catalog `
+    --instruments 0,40 --roots C,D --chords major,minor,dom7
+```
 
-The implemented non-UI core follows the docs pipeline:
+### 5. 快速預覽單一和弦的內建合成音色
+
+```powershell
+build\Release\music_elf_cli.exe render-demo `
+    --out-wav preview.wav `
+    --program 0 --root C --chord major
+```
+
+### 6. 量測管線執行效能
+
+```powershell
+build\Release\music_elf_cli.exe benchmark input.wav `
+    --iterations 5 --out-summary benchmark.txt
+```
+
+輸出包含確定性的管線統計值以及 `benchmark_average_ms`、`benchmark_min_ms`、`benchmark_max_ms` 三項實測時間。
+
+### 核心管線流程
 
 ```text
 mono float32 PCM
-  -> realtime pitch detection
-  -> note segmentation
-  -> rhythm quantization + note dynamics
-  -> key detection + chord progression candidates
-  -> simple accompaniment patterns
-  -> quantized MIDI / MusicXML lead-sheet export
+  → 即時音高偵測 (YIN)
+  → 音符切分 (NoteSegmenter)
+  → 節奏量化 + 音符力度分析
+  → 調性偵測 + 和弦進行候選
+  → 伴奏聲部生成
+  → 量化 MIDI / MusicXML 主旋律譜輸出
 ```
 
-See `docs/algorithm_flow_status.md` for a status flowchart that marks completed,
-partial, and not-started algorithm stages.
+完整演算法狀態（已完成 / 部分完成 / 尚未實作）請參考 `docs/algorithm_flow_status.md`。
 
-## Core APIs
+---
 
-Pitch detection: `include/music_elf/pitch_detector.hpp`
+## 專案架構說明
 
-- `PitchDetectorConfig` controls sample rate, analysis frame/hop, supported
-  frequency range, YIN threshold, and silence RMS gate.
-- `PitchDetector::process(...)` accepts streaming mono `float32` PCM and writes
-  `PitchEstimate` frames into caller-owned output storage.
-- `PitchEstimate` reports voiced/unvoiced state, frequency, nearest MIDI note,
-  cents deviation, confidence, and frame timestamp.
+```text
+music_elf/
+├── CMakeLists.txt                  # CMake 主設定檔，定義 core 程式庫、CLI、測試目標
+├── README.md                       # 本文件
+├── .clang-format                   # 程式碼格式設定
+├── include/
+│   └── music_elf/                  # 公開標頭檔（C++ 與 C ABI 介面）
+│       ├── pitch_detector.hpp      #   YIN 音高偵測器
+│       ├── note_segmenter.hpp      #   音符切分
+│       ├── rhythm_analyzer.hpp     #   BPM / 拍點 / 節奏量化
+│       ├── dynamics_analyzer.hpp   #   RMS、velocity、力度標記
+│       ├── harmony_analyzer.hpp    #   調性與和弦進行
+│       ├── accompaniment_generator.hpp  # 伴奏型態生成
+│       ├── lyric_aligner.hpp       #   歌詞 token 對齊
+│       ├── midi_writer.hpp         #   Standard MIDI 匯出
+│       ├── musicxml_writer.hpp     #   MusicXML 主旋律譜匯出
+│       ├── midi_catalog.hpp        #   GM 和弦資料庫產生器
+│       ├── audio_io.hpp            #   WAV 讀寫與單聲道降混
+│       ├── audio_renderer.hpp      #   內建振盪器預覽渲染
+│       ├── core_pipeline.hpp       #   端對端管線整合
+│       ├── model_interfaces.hpp    #   模型導向擴充介面定義
+│       └── c_api.h                 #   C ABI 對外介面
+├── src/                            # 對應上述標頭檔的實作檔
+├── tools/
+│   └── music_elf_cli.cpp           # CLI 主程式（inspect / generate-catalog / benchmark 等子命令）
+├── tests/                          # CTest 單元與整合測試
+│   ├── pitch_detector_tests.cpp
+│   ├── note_segmenter_tests.cpp
+│   ├── rhythm_dynamics_tests.cpp
+│   ├── harmony_tests.cpp
+│   ├── arrangement_midi_tests.cpp
+│   ├── audio_renderer_tests.cpp
+│   ├── lyrics_musicxml_tests.cpp
+│   ├── audio_io_tests.cpp
+│   ├── pipeline_integration_tests.cpp
+│   ├── cli_end_to_end_tests.cpp
+│   ├── c_api_tests.cpp
+│   ├── model_interfaces_tests.cpp
+│   ├── midi_catalog_tests.cpp
+│   └── export_snapshot_tests.cpp
+├── docs/                           # 演算法狀態、模型整合 schema、可行性分析等技術文件
+│   ├── algorithm_flow_status.md
+│   ├── model_integration_schemas.md
+│   └── pre_ui_model_roadmap.md
+├── agents/                         # 子代理（subagents）與技能（skills）相關設定
+└── build/                          # CMake 建置輸出目錄（git 已忽略）
+```
 
-Note segmentation: `include/music_elf/note_segmenter.hpp`
+### 主要模組職責一覽
 
-- `NoteSegmenterConfig` controls minimum confidence, minimum note duration,
-  tolerated unvoiced gaps, and pitch-change tolerance.
-- `NoteSegmenter::process(...)` accepts streaming `PitchEstimate` frames and
-  writes quantized `NoteEvent` values into caller-owned output storage.
-- `NoteSegmenter::flush(...)` emits the final active note at the end of a stream.
+| 模組 | 標頭檔 | 說明 |
+| --- | --- | --- |
+| 音高偵測 | `pitch_detector.hpp` | 串流式 YIN 演算法，輸出每個分析窗的音高估計 |
+| 音符切分 | `note_segmenter.hpp` | 將連續音高估計合併為帶有起訖時間的 `NoteEvent` |
+| 節奏分析 | `rhythm_analyzer.hpp` | BPM 估計、拍點對齊、起訖時間量化 |
+| 力度分析 | `dynamics_analyzer.hpp` | 計算每個音符的 RMS / 峰值 / velocity / 動態標記 |
+| 和聲分析 | `harmony_analyzer.hpp` | 調性偵測與多種風格的候選和弦進行 |
+| 伴奏生成 | `accompaniment_generator.hpp` | block / arpeggio / broken / pad 等伴奏型態 |
+| 歌詞對齊 | `lyric_aligner.hpp` | 確定性歌詞 token 對齊（非 ASR） |
+| MIDI 匯出 | `midi_writer.hpp` | 在記憶體中產生 Standard MIDI 檔 |
+| MusicXML 匯出 | `musicxml_writer.hpp` | 量化主旋律譜，含和弦符號、歌詞、調號、拍號 |
+| 音訊 I/O | `audio_io.hpp` | WAV 讀寫與單聲道降混 |
+| 預覽渲染 | `audio_renderer.hpp` | 簡易振盪器合成 WAV，用於快速驗收 |
+| 整合管線 | `core_pipeline.hpp` | 將上述模組串接為端對端流程 |
+| C ABI 介面 | `c_api.h` | 對外的 C 介面，便於跨語言整合 |
 
-Rhythm and dynamics:
+---
 
-- `include/music_elf/rhythm_analyzer.hpp` estimates BPM/beat grid from note
-  onsets and quantizes note starts/durations.
-- `include/music_elf/dynamics_analyzer.hpp` computes note-level RMS, peak,
-  MIDI velocity, and dynamic mark from the original PCM.
+## 目前限制
 
-Harmony and arrangement:
+目前實作鎖定於**乾淨的單聲道人聲或單旋律輸入**。下列功能尚未涵蓋，建議透過 `model_interfaces.hpp` 所定義的擴充點以模型導向的方式後續補上：
 
-- `include/music_elf/harmony_analyzer.hpp` detects key and generates multiple
-  style-based chord progression candidates.
-- `include/music_elf/accompaniment_generator.hpp` generates block chord,
-  arpeggio, broken chord, pad, and bass+chord accompaniment notes with optional
-  inversion, range limits, and simple voice leading.
+- 來源分離（Source Separation）
+- 未知歌詞自動語音辨識（ASR）
+- 神經網路式 Audio-to-MIDI
+- 複音音高偵測
+- 完整管弦樂配器
 
-Lyrics and export:
+模型導向擴充的 schema 詳見 `docs/model_integration_schemas.md`。
 
-- `include/music_elf/audio_io.hpp` reads PCM/float WAV files, writes PCM16 WAV,
-  and downmixes to mono.
-- `include/music_elf/audio_renderer.hpp` renders generated notes to a simple
-  built-in mono WAV preview.
-- `include/music_elf/core_pipeline.hpp` runs the end-to-end non-UI pipeline.
-- `include/music_elf/midi_catalog.hpp` generates General MIDI chord catalog
-  files across instruments, roots, and common chord types.
-- `include/music_elf/lyric_aligner.hpp` aligns known lyric tokens to extracted
-  notes deterministically. It is not ASR.
-- `include/music_elf/midi_writer.hpp` exports Standard MIDI files in memory.
-- `include/music_elf/musicxml_writer.hpp` exports quantized single-part
-  MusicXML lead sheets with measures, rests, ties, lyrics, chord symbols, key
-  signature, time signature, and treble clef.
-- `include/music_elf/c_api.h` exposes C ABI helpers for pitch detection,
-  WAV-to-MIDI export, pipeline summaries, and MIDI/MusicXML file export.
-- `include/music_elf/model_interfaces.hpp` defines explicit interfaces for
-  model-backed features that are not part of the deterministic MVP core.
+---
 
-Model-backed integration schemas are documented in
-`docs/model_integration_schemas.md`.
+## 授權條款
 
-## Current Limits
+本專案以 **Apache License 2.0** 授權釋出。
 
-The current implementation targets clean monophonic voice or single-melody
-input. It does not perform source separation, unknown-lyrics ASR, neural
-audio-to-MIDI, polyphonic pitch detection, or full orchestration. Those pieces
-should be added later through explicit model-backed modules.
+```
+Copyright (c) Music Elf contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+完整授權條文請參閱 [LICENSE](./LICENSE)（如尚未建立，請至 <https://www.apache.org/licenses/LICENSE-2.0.txt> 取得官方版本）。

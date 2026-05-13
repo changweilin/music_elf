@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check /c/Users/user/Documents/app/music_elf/docs/conductor-studio/conductor.jsx)",
+      "Bash(npx --yes @babel/cli@7 --plugins @babel/plugin-transform-react-jsx --presets= /c/Users/user/Documents/app/music_elf/docs/conductor-studio/conductor.jsx -o /tmp/_compiled.js)",
+      "Bash(npx --yes @babel/core@7 @babel/preset-react@7)",
+      "Bash(node -e ' *)"
+    ]
+  }
+}

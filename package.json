@@ -1,0 +1,8 @@
+{
+  "name": "music-elf",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node tools/dev-server.mjs --host 0.0.0.0 --port 5299 --root docs/conductor-studio"
+  }
+}
