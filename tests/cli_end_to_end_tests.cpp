@@ -112,6 +112,10 @@ void test_cli_inspect_writes_summary(const std::string& cli_path) {
     require(exit_code == 0, "inspect CLI command should exit successfully");
     require(file_contains(summary_path, "command: inspect"), "inspect summary command");
     require(file_contains(summary_path, "pitch_frames:"), "inspect summary pitch frames");
+    require(file_contains(summary_path, "pitch_stability_cents:"),
+            "inspect summary pitch stability");
+    require(file_contains(summary_path, "stable_pitch_frame_ratio:"),
+            "inspect summary stable frame ratio");
     require(file_contains(summary_path, "musicxml_chars:"), "inspect summary MusicXML size");
 
     std::remove(wav_path.c_str());
@@ -134,6 +138,8 @@ void test_cli_benchmark_writes_runtime_summary(const std::string& cli_path) {
     require(file_contains(summary_path, "command: benchmark"), "benchmark summary command");
     require(file_contains(summary_path, "benchmark_iterations: 2"), "benchmark iteration count");
     require(file_contains(summary_path, "benchmark_average_ms:"), "benchmark average");
+    require(file_contains(summary_path, "pitch_stability_cents:"),
+            "benchmark summary pitch stability");
 
     std::remove(wav_path.c_str());
     std::remove(summary_path.c_str());

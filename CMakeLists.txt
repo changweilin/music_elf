@@ -59,6 +59,10 @@ function(add_music_elf_test target)
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
+set(MUSIC_ELF_ACAPELLA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/acapella")
+set(MUSIC_ELF_ACAPELLA_OUT "${CMAKE_CURRENT_BINARY_DIR}/acapella_outputs")
+file(MAKE_DIRECTORY "${MUSIC_ELF_ACAPELLA_OUT}")
+
 if(BUILD_TESTING)
     add_music_elf_test(pitch_detector_tests tests/pitch_detector_tests.cpp)
     add_music_elf_test(note_segmenter_tests tests/note_segmenter_tests.cpp)
@@ -85,4 +89,23 @@ if(BUILD_TESTING)
     add_test(NAME cli_end_to_end_tests COMMAND cli_end_to_end_tests $<TARGET_FILE:music_elf_cli>)
 
     add_test(NAME music_elf_cli_help COMMAND music_elf_cli --help)
+
+    add_music_elf_test(acapella_real_audio_tests tests/acapella_real_audio_tests.cpp)
+    target_compile_definitions(acapella_real_audio_tests PRIVATE
+        MUSIC_ELF_ACAPELLA_DIR="${MUSIC_ELF_ACAPELLA_DIR}"
+        MUSIC_ELF_ACAPELLA_OUT="${MUSIC_ELF_ACAPELLA_OUT}")
+
+    add_executable(acapella_cli_tests tests/acapella_cli_tests.cpp)
+    target_link_libraries(acapella_cli_tests PRIVATE music_elf_core)
+    target_compile_features(acapella_cli_tests PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(acapella_cli_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(acapella_cli_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    target_compile_definitions(acapella_cli_tests PRIVATE
+        MUSIC_ELF_ACAPELLA_DIR="${MUSIC_ELF_ACAPELLA_DIR}"
+        MUSIC_ELF_ACAPELLA_OUT="${MUSIC_ELF_ACAPELLA_OUT}")
+    add_test(NAME acapella_cli_tests
+             COMMAND acapella_cli_tests $<TARGET_FILE:music_elf_cli>)
 endif()

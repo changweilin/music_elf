@@ -1,0 +1,9 @@
+song: happy_birthday_thomas_48k
+file: 48kHz_Happy Birthday_Thomas_x15dB.WAV
+sample_rate: 48000        duration_sec: 13.8769
+expected_key_pc: (n/a)   detected_key: E minor
+expected_bpm: (n/a)   detected_bpm: 140.625
+expected_notes: 0-4096   detected_notes: 57   [OK]
+voiced_ratio: 0.810431   pitch_stability_cents: 24.4869   stable_pitch_frame_ratio: 0.508905   stable_pitch_frames: 2143
+export_sizes:   midi_bytes: 560   musicxml_chars: 15672
+chord_progressions: 5   lyric_alignments: 8   preview_samples: 662976

@@ -1,0 +1,10 @@
+song: happy_birthday
+file: Happy Birthday To You _ Acapella Solo Singing Cover +4Semitone 8kHz.wav
+sample_rate: 8000        duration_sec: 75.3487
+expected_key_pc: 9   detected_key: D minor   [OK]
+expected_bpm: 60-180   detected_bpm: 129.31   [OK]
+expected_root_midi: 69 (pc=9)   median_midi: 69 (pc=9)   [OK]
+expected_notes: 8-400   detected_notes: 273   [OK]
+voiced_ratio: 0.810435   pitch_stability_cents: 24.4693   stable_pitch_frame_ratio: 0.513177   stable_pitch_frames: 3914
+export_sizes:   midi_bytes: 2440   musicxml_chars: 71112
+chord_progressions: 5   lyric_alignments: 8   preview_samples: 598432

@@ -21,6 +21,16 @@ implementation, not runtime code.
 
 ## Skills
 
+Each skill ships in two flavors so the same role can be invoked from either
+Claude Code or a ChatGPT Custom GPT / OpenAI Assistant:
+
+- `skills/<name>/SKILL.md` — Claude Code skill (frontmatter + workflow).
+- `skills/<name>/agents/openai.yaml` — ChatGPT Custom GPT spec (display
+  metadata, recommended model, capabilities, full instructions, guardrails,
+  acceptance criteria).
+
+Skills:
+
 - `skills/music-elf-core-pipeline`: core C++ audio/music pipeline work.
 - `skills/music-elf-ui-app`: Flutter desktop/mobile app work.
 - `skills/music-elf-localization`: localization, lyric translation, and ARB
@@ -36,16 +46,44 @@ implementation, not runtime code.
 
 ## Sub-Agents
 
-- `subagents/core-dsp.md`
-- `subagents/music-theory-arrangement.md`
-- `subagents/export-notation-qa.md`
-- `subagents/flutter-ui.md`
-- `subagents/ui-event-state.md`
-- `subagents/localization.md`
-- `subagents/parameter-db.md`
-- `subagents/model-adapter.md`
-- `subagents/spatial-numeric-analysis.md`
-- `subagents/market-science.md`
+Each sub-agent also has paired definitions:
+
+- `subagents/<name>.md` — Claude Code sub-agent role brief.
+- `subagents/openai/<name>.yaml` — OpenAI Assistant spec (tools, owns,
+  inputs, outputs, instructions, acceptance).
+
+Sub-agents:
+
+- `core-dsp` — `subagents/core-dsp.md`, `subagents/openai/core-dsp.yaml`
+- `music-theory-arrangement` — `subagents/music-theory-arrangement.md`,
+  `subagents/openai/music-theory-arrangement.yaml`
+- `export-notation-qa` — `subagents/export-notation-qa.md`,
+  `subagents/openai/export-notation-qa.yaml`
+- `flutter-ui` — `subagents/flutter-ui.md`,
+  `subagents/openai/flutter-ui.yaml`
+- `ui-event-state` — `subagents/ui-event-state.md`,
+  `subagents/openai/ui-event-state.yaml`
+- `localization` — `subagents/localization.md`,
+  `subagents/openai/localization.yaml`
+- `parameter-db` — `subagents/parameter-db.md`,
+  `subagents/openai/parameter-db.yaml`
+- `model-adapter` — `subagents/model-adapter.md`,
+  `subagents/openai/model-adapter.yaml`
+- `spatial-numeric-analysis` — `subagents/spatial-numeric-analysis.md`,
+  `subagents/openai/spatial-numeric-analysis.yaml`
+- `market-science` — `subagents/market-science.md`,
+  `subagents/openai/market-science.yaml`
+
+## Parity between Claude and ChatGPT versions
+
+The two flavors are kept aligned on purpose:
+
+- Same name, same owned files, same inputs/outputs, same guardrails, same
+  acceptance criteria.
+- When changing a role, update both files in the same commit.
+- ChatGPT YAML files include richer surface metadata (display name,
+  conversation starters, capability flags) needed by Custom GPT / Assistant
+  configuration; Claude markdown stays workflow-first.
 
 ## Shared Rules
 

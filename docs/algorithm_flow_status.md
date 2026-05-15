@@ -66,6 +66,7 @@ flowchart TD
 - General MIDI catalog generator: `include/music_elf/midi_catalog.hpp`
 - Quantized single-part MusicXML lead sheet export with measures, rests, ties, lyrics, chord symbols, key, time, and clef: `include/music_elf/musicxml_writer.hpp`
 - CLI demo, inspect, benchmark, catalog, and render-preview helpers: `tools/music_elf_cli.cpp`
+- CLI supports `--analysis-wav` to run the pipeline on an externally prepared stem (e.g., source-separated vocals) while keeping the original input path for context.
 - C ABI wrapper with pitch, pipeline summary, MIDI export, and MusicXML export helpers: `include/music_elf/c_api.h`
 - Model-backed feature interfaces: `include/music_elf/model_interfaces.hpp`
 - Model integration data contracts: `docs/model_integration_schemas.md`

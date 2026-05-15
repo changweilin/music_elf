@@ -1,0 +1,10 @@
+song: london_bridge
+file: London Bridge Is Falling Down_Acapella +4Semitone 8kHz.wav
+sample_rate: 8000        duration_sec: 33.1422
+expected_key_pc: 11   detected_key: Eb minor   [OK]
+expected_bpm: 60-180   detected_bpm: 136.364   [OK]
+expected_root_midi: 71 (pc=11)   median_midi: 64 (pc=4)   [OK]
+expected_notes: 8-300   detected_notes: 161   [OK]
+voiced_ratio: 0.861427   pitch_stability_cents: 25.7279   stable_pitch_frame_ratio: 0.490174   stable_pitch_frames: 1746
+export_sizes:   midi_bytes: 1452   musicxml_chars: 38594
+chord_progressions: 5   lyric_alignments: 9   preview_samples: 258017

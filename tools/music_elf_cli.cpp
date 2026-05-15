@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -30,17 +32,32 @@ struct PipelineOptions {
     CorePipelineConfig config;
 };
 
+struct PitchStabilitySummary {
+    std::size_t voiced_frames = 0;
+    std::size_t stable_frames = 0;
+    double mean_abs_cents = 0.0;
+    double stable_ratio = 0.0;
+};
+
 void print_usage() {
     std::cout
         << "Usage: music_elf_cli <input.wav> [--out-midi file.mid] [--out-musicxml file.musicxml]\n"
         << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
+        << "                     [--analysis-wav file.wav]\n"
         << "       music_elf_cli inspect <input.wav> [--out-summary file]\n"
         << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
+        << "                     [--analysis-wav file.wav]\n"
         << "       music_elf_cli benchmark <input.wav> [--iterations count] [--out-summary file]\n"
         << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
+        << "                     [--analysis-wav file.wav]\n"
         << "       music_elf_cli render-preview <input.wav> [--out-wav preview.wav]\n"
         << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
         << "                     [--waveform sine|square|saw|triangle]\n"
+        << "                     [--analysis-wav file.wav]\n"
+        << "       music_elf_cli render-beats <input.wav> [--out-wav beats.wav]\n"
+        << "                     [--click-gain 0.5] [--source-gain 1.0]\n"
+        << "                     [--beat-freq 1000] [--downbeat-freq 1600] [--click-duration 0.06]\n"
+        << "                     [--analysis-wav file.wav]\n"
         << "       music_elf_cli generate-catalog [--out-dir dir]\n"
         << "                     [--instruments all|0,40] [--roots all|C,D,E]\n"
         << "                     [--chords all|major,minor,dom7] [--duration seconds]\n"
@@ -106,6 +123,19 @@ bool parse_pipeline_option(const std::string& arg, int& index, int argc, char** 
     }
     if (arg == "--pattern") {
         options.config.accompaniment.pattern = parse_pattern(require_value(index, argc, argv, arg));
+        return true;
+    }
+    return false;
+}
+
+bool parse_audio_input_option(
+    const std::string& arg,
+    int& index,
+    int argc,
+    char** argv,
+    std::string& analysis_wav_path) {
+    if (arg == "--analysis-wav") {
+        analysis_wav_path = require_value(index, argc, argv, arg);
         return true;
     }
     return false;
@@ -224,10 +254,37 @@ std::vector<music_elf::GeneratedNote> make_preview_notes(
     return notes;
 }
 
+PitchStabilitySummary summarize_pitch_stability(
+    const std::vector<music_elf::PitchEstimate>& estimates) {
+    PitchStabilitySummary summary;
+    double total_abs_cents = 0.0;
+    for (const auto& estimate : estimates) {
+        if (!estimate.voiced || estimate.midi_note <= 0 ||
+            !std::isfinite(estimate.cents)) {
+            continue;
+        }
+        summary.voiced_frames += 1;
+        const double abs_cents = std::fabs(static_cast<double>(estimate.cents));
+        total_abs_cents += abs_cents;
+        if (abs_cents <= 25.0) {
+            summary.stable_frames += 1;
+        }
+    }
+    if (summary.voiced_frames > 0) {
+        summary.mean_abs_cents =
+            total_abs_cents / static_cast<double>(summary.voiced_frames);
+        summary.stable_ratio =
+            static_cast<double>(summary.stable_frames) /
+            static_cast<double>(summary.voiced_frames);
+    }
+    return summary;
+}
+
 void write_pipeline_summary(
     std::ostream& out,
     const std::string& command,
     const std::string& input_path,
+    const std::string& analysis_input_path,
     const music_elf::AudioBuffer& audio,
     const music_elf::CorePipelineResult& result) {
     const std::size_t frames = audio.channels > 0
@@ -242,15 +299,22 @@ void write_pipeline_summary(
         [](const music_elf::PitchEstimate& estimate) {
             return estimate.voiced;
         });
+    const auto stability = summarize_pitch_stability(result.pitch_estimates);
 
     out << std::fixed << std::setprecision(3);
     out << "command: " << command << "\n";
     out << "input: " << input_path << "\n";
+    if (analysis_input_path != input_path) {
+        out << "analysis_input: " << analysis_input_path << "\n";
+    }
     out << "sample_rate: " << audio.sample_rate << "\n";
     out << "channels: " << audio.channels << "\n";
     out << "duration_seconds: " << duration_seconds << "\n";
     out << "pitch_frames: " << result.pitch_estimates.size() << "\n";
     out << "voiced_pitch_frames: " << voiced_frames << "\n";
+    out << "pitch_stability_cents: " << stability.mean_abs_cents << "\n";
+    out << "stable_pitch_frames: " << stability.stable_frames << "\n";
+    out << "stable_pitch_frame_ratio: " << stability.stable_ratio << "\n";
     out << "notes: " << result.notes.size() << "\n";
     out << "estimated_bpm: " << result.rhythm.beat_grid.bpm << "\n";
     out << "key: " << music_elf::note_name(result.key.tonic_pitch_class) << " "
@@ -281,6 +345,7 @@ int run_inspect(int argc, char** argv) {
         throw std::invalid_argument("inspect requires an input WAV path");
     }
     std::string input_path = argv[2];
+    std::string analysis_wav_path;
     std::string out_summary;
     PipelineOptions options;
 
@@ -292,16 +357,18 @@ int run_inspect(int argc, char** argv) {
         }
         if (arg == "--out-summary") {
             out_summary = require_value(i, argc, argv, arg);
+        } else if (parse_audio_input_option(arg, i, argc, argv, analysis_wav_path)) {
         } else if (!parse_pipeline_option(arg, i, argc, argv, options)) {
             throw std::invalid_argument("unknown or incomplete argument: " + arg);
         }
     }
 
-    const auto audio = music_elf::read_wav_file(input_path);
+    const std::string analysis_path = analysis_wav_path.empty() ? input_path : analysis_wav_path;
+    const auto audio = music_elf::read_wav_file(analysis_path);
     const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
 
     std::ostringstream summary;
-    write_pipeline_summary(summary, "inspect", input_path, audio, result);
+    write_pipeline_summary(summary, "inspect", input_path, analysis_path, audio, result);
     emit_summary(summary.str(), out_summary);
     return 0;
 }
@@ -311,6 +378,7 @@ int run_benchmark(int argc, char** argv) {
         throw std::invalid_argument("benchmark requires an input WAV path");
     }
     std::string input_path = argv[2];
+    std::string analysis_wav_path;
     std::string out_summary;
     int iterations = 3;
     PipelineOptions options;
@@ -325,6 +393,7 @@ int run_benchmark(int argc, char** argv) {
             iterations = std::stoi(require_value(i, argc, argv, arg));
         } else if (arg == "--out-summary") {
             out_summary = require_value(i, argc, argv, arg);
+        } else if (parse_audio_input_option(arg, i, argc, argv, analysis_wav_path)) {
         } else if (!parse_pipeline_option(arg, i, argc, argv, options)) {
             throw std::invalid_argument("unknown or incomplete argument: " + arg);
         }
@@ -333,7 +402,8 @@ int run_benchmark(int argc, char** argv) {
         throw std::invalid_argument("iterations must be positive");
     }
 
-    const auto audio = music_elf::read_wav_file(input_path);
+    const std::string analysis_path = analysis_wav_path.empty() ? input_path : analysis_wav_path;
+    const auto audio = music_elf::read_wav_file(analysis_path);
     music_elf::CorePipelineResult last_result;
     double total_ms = 0.0;
     double min_ms = std::numeric_limits<double>::max();
@@ -351,7 +421,7 @@ int run_benchmark(int argc, char** argv) {
     }
 
     std::ostringstream summary;
-    write_pipeline_summary(summary, "benchmark", input_path, audio, last_result);
+    write_pipeline_summary(summary, "benchmark", input_path, analysis_path, audio, last_result);
     summary << std::fixed << std::setprecision(3);
     summary << "benchmark_iterations: " << iterations << "\n";
     summary << "benchmark_average_ms: " << (total_ms / static_cast<double>(iterations)) << "\n";
@@ -366,6 +436,7 @@ int run_render_preview(int argc, char** argv) {
         throw std::invalid_argument("render-preview requires an input WAV path");
     }
     std::string input_path = argv[2];
+    std::string analysis_wav_path;
     std::string out_wav = "music_elf_pipeline_preview.wav";
     PipelineOptions options;
     AudioRendererConfig render_config;
@@ -380,12 +451,14 @@ int run_render_preview(int argc, char** argv) {
             out_wav = require_value(i, argc, argv, arg);
         } else if (arg == "--waveform") {
             render_config.waveform = parse_waveform(require_value(i, argc, argv, arg));
+        } else if (parse_audio_input_option(arg, i, argc, argv, analysis_wav_path)) {
         } else if (!parse_pipeline_option(arg, i, argc, argv, options)) {
             throw std::invalid_argument("unknown or incomplete argument: " + arg);
         }
     }
 
-    const auto audio = music_elf::read_wav_file(input_path);
+    const std::string analysis_path = analysis_wav_path.empty() ? input_path : analysis_wav_path;
+    const auto audio = music_elf::read_wav_file(analysis_path);
     render_config.sample_rate = audio.sample_rate;
     const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
     const auto preview_notes = make_preview_notes(result, options.config);
@@ -394,6 +467,9 @@ int run_render_preview(int argc, char** argv) {
 
     std::cout << "Rendered pipeline preview WAV\n";
     std::cout << "Input: " << input_path << "\n";
+    if (analysis_path != input_path) {
+        std::cout << "Analysis input: " << analysis_path << "\n";
+    }
     std::cout << "Waveform: " << music_elf::preview_waveform_name(render_config.waveform) << "\n";
     std::cout << "Preview notes: " << preview_notes.size() << "\n";
     std::cout << "Output: " << out_wav << "\n";
@@ -459,6 +535,123 @@ int run_generate_catalog(int argc, char** argv) {
     std::cout << "Roots: " << roots.size() << "\n";
     std::cout << "Chord types: " << chords.size() << "\n";
     std::cout << "Files: " << written << "\n";
+    return 0;
+}
+
+void mix_click_into_audio(
+    music_elf::AudioBuffer& audio,
+    double click_time_seconds,
+    double frequency_hz,
+    double duration_seconds,
+    float gain) {
+    if (audio.sample_rate <= 0 || audio.channels <= 0 || audio.samples.empty()) {
+        return;
+    }
+    const int channels = audio.channels;
+    const std::size_t total_frames = audio.samples.size() / static_cast<std::size_t>(channels);
+    const auto start_frame_signed =
+        static_cast<long long>(std::llround(click_time_seconds * audio.sample_rate));
+    if (start_frame_signed < 0) {
+        return;
+    }
+    const std::size_t start_frame = static_cast<std::size_t>(start_frame_signed);
+    if (start_frame >= total_frames) {
+        return;
+    }
+    const std::size_t click_frames = static_cast<std::size_t>(
+        std::max(1.0, duration_seconds * audio.sample_rate));
+    const std::size_t end_frame = std::min(total_frames, start_frame + click_frames);
+    const double decay_constant = 25.0;  // ~40 ms perceived tail
+    constexpr double kTwoPi = 6.28318530717958647692;
+    for (std::size_t frame = start_frame; frame < end_frame; ++frame) {
+        const double t = static_cast<double>(frame - start_frame) / static_cast<double>(audio.sample_rate);
+        const double envelope = std::exp(-decay_constant * t);
+        const double sample = std::sin(kTwoPi * frequency_hz * t) * envelope * gain;
+        const std::size_t base_index = frame * static_cast<std::size_t>(channels);
+        for (int channel = 0; channel < channels; ++channel) {
+            float& target = audio.samples[base_index + static_cast<std::size_t>(channel)];
+            const double mixed = static_cast<double>(target) + sample;
+            target = static_cast<float>(std::clamp(mixed, -1.0, 1.0));
+        }
+    }
+}
+
+int run_render_beats(int argc, char** argv) {
+    if (argc < 3) {
+        throw std::invalid_argument("render-beats requires an input WAV path");
+    }
+    std::string input_path = argv[2];
+    std::string analysis_wav_path;
+    std::string out_wav;
+    PipelineOptions options;
+    double click_gain = 0.5;
+    double source_gain = 1.0;
+    double beat_freq = 1000.0;
+    double downbeat_freq = 1600.0;
+    double click_duration_seconds = 0.06;
+
+    for (int i = 3; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+        if (arg == "--out-wav") {
+            out_wav = require_value(i, argc, argv, arg);
+        } else if (arg == "--click-gain") {
+            click_gain = std::stod(require_value(i, argc, argv, arg));
+        } else if (arg == "--source-gain") {
+            source_gain = std::stod(require_value(i, argc, argv, arg));
+        } else if (arg == "--beat-freq") {
+            beat_freq = std::stod(require_value(i, argc, argv, arg));
+        } else if (arg == "--downbeat-freq") {
+            downbeat_freq = std::stod(require_value(i, argc, argv, arg));
+        } else if (arg == "--click-duration") {
+            click_duration_seconds = std::stod(require_value(i, argc, argv, arg));
+        } else if (parse_audio_input_option(arg, i, argc, argv, analysis_wav_path)) {
+        } else if (!parse_pipeline_option(arg, i, argc, argv, options)) {
+            throw std::invalid_argument("unknown or incomplete argument: " + arg);
+        }
+    }
+
+    if (out_wav.empty()) {
+        std::filesystem::path base(input_path);
+        out_wav = base.replace_extension("").string() + "_beats.wav";
+    }
+
+    const std::string analysis_path = analysis_wav_path.empty() ? input_path : analysis_wav_path;
+    auto audio = music_elf::read_wav_file(analysis_path);
+    const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
+    const auto& beats = result.rhythm.beat_grid.beat_times_seconds;
+    const int beats_per_bar = std::max(1, result.rhythm.beat_grid.beats_per_bar);
+
+    if (source_gain != 1.0) {
+        for (auto& sample : audio.samples) {
+            const double scaled = static_cast<double>(sample) * source_gain;
+            sample = static_cast<float>(std::clamp(scaled, -1.0, 1.0));
+        }
+    }
+
+    for (std::size_t i = 0; i < beats.size(); ++i) {
+        const bool is_downbeat = (static_cast<int>(i) % beats_per_bar) == 0;
+        const double frequency = is_downbeat ? downbeat_freq : beat_freq;
+        const float gain = is_downbeat
+                               ? static_cast<float>(click_gain)
+                               : static_cast<float>(click_gain * 0.75);
+        mix_click_into_audio(audio, beats[i], frequency, click_duration_seconds, gain);
+    }
+
+    music_elf::write_wav_file(out_wav, audio);
+
+    std::cout << "Rendered beat-overlay WAV\n";
+    std::cout << "Input: " << input_path << "\n";
+    if (analysis_path != input_path) {
+        std::cout << "Analysis input: " << analysis_path << "\n";
+    }
+    std::cout << "Estimated BPM: " << result.rhythm.beat_grid.bpm << "\n";
+    std::cout << "Beats per bar: " << beats_per_bar << "\n";
+    std::cout << "Beats: " << beats.size() << "\n";
+    std::cout << "Output: " << out_wav << "\n";
     return 0;
 }
 
@@ -544,6 +737,9 @@ int main(int argc, char** argv) {
         if (std::string(argv[1]) == "render-preview") {
             return run_render_preview(argc, argv);
         }
+        if (std::string(argv[1]) == "render-beats") {
+            return run_render_beats(argc, argv);
+        }
 
         std::string input_path = argv[1];
         std::filesystem::path base(input_path);
@@ -551,6 +747,7 @@ int main(int argc, char** argv) {
         base = std::filesystem::path(input_path);
         std::string out_musicxml = base.replace_extension(".musicxml").string();
         PipelineOptions options;
+        std::string analysis_wav_path;
 
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];
@@ -562,13 +759,15 @@ int main(int argc, char** argv) {
                 out_midi = require_value(i, argc, argv, arg);
             } else if (arg == "--out-musicxml" && i + 1 < argc) {
                 out_musicxml = require_value(i, argc, argv, arg);
+            } else if (parse_audio_input_option(arg, i, argc, argv, analysis_wav_path)) {
             } else if (parse_pipeline_option(arg, i, argc, argv, options)) {
             } else {
                 throw std::invalid_argument("unknown or incomplete argument: " + arg);
             }
         }
 
-        const auto audio = music_elf::read_wav_file(input_path);
+        const std::string analysis_path = analysis_wav_path.empty() ? input_path : analysis_wav_path;
+        const auto audio = music_elf::read_wav_file(analysis_path);
         const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
 
         write_binary_file(out_midi, result.midi_bytes);
@@ -576,6 +775,9 @@ int main(int argc, char** argv) {
 
         std::cout << "Music Elf analysis complete\n";
         std::cout << "Input: " << input_path << "\n";
+        if (analysis_path != input_path) {
+            std::cout << "Analysis input: " << analysis_path << "\n";
+        }
         std::cout << "Pitch frames: " << result.pitch_estimates.size() << "\n";
         std::cout << "Notes: " << result.notes.size() << "\n";
         std::cout << "Estimated BPM: " << result.rhythm.beat_grid.bpm << "\n";

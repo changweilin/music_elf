@@ -155,6 +155,23 @@ const TRACK = [
   { t: 11.2, chord: 'G7',     pitch: 'G4',  lyric: '回家的方向' },
 ];
 
+const PROCESS_STAGES = [
+  { zh: '錄音整理', en: 'Capture cleanup', detail: 'Mono downmix · noise floor · headroom' },
+  { zh: '音高與音符', en: 'Pitch + notes', detail: 'YIN F0 · segmentation · confidence' },
+  { zh: '節奏與力度', en: 'Rhythm + dynamics', detail: 'BPM grid · RMS · velocity' },
+  { zh: '和聲與伴奏', en: 'Harmony + ensemble', detail: 'Key · chords · style arrangement' },
+  { zh: '人聲空間', en: 'Vocal processing', detail: 'Dry voice · Hall A reverb blend' },
+  { zh: '混音輸出', en: 'Mix + export', detail: 'Auto balance · -14 LUFS · preview bounce' },
+];
+
+const PITCH_TO_MIDI = {
+  C3: 48, D3: 50, E3: 52, F3: 53, G3: 55, A3: 57, B3: 59,
+  C4: 60, D4: 62, E4: 64, F4: 65, G4: 67, A4: 69, B4: 71,
+  C5: 72, D5: 74, E5: 76, F5: 77, G5: 79, A5: 81, B5: 83,
+};
+
+const ROOT_TO_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 
@@ -169,6 +186,170 @@ function gridToXY(gx, gy, w, h) {
 }
 
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function midiToFrequency(midi) {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+function chordToMidis(symbol, octave = 3) {
+  const match = /^([A-G])([#b]?)(.*)$/.exec(symbol || 'C');
+  if (!match) return [48, 52, 55];
+  let pc = ROOT_TO_PC[match[1]];
+  if (match[2] === '#') pc += 1;
+  if (match[2] === 'b') pc -= 1;
+  pc = ((pc % 12) + 12) % 12;
+
+  const tail = match[3] || '';
+  const intervals = tail.includes('dim') ? [0, 3, 6]
+    : tail.includes('m') && !tail.includes('maj') ? [0, 3, 7, 10]
+    : tail.includes('7') && !tail.includes('maj') ? [0, 4, 7, 10]
+    : tail.includes('maj7') ? [0, 4, 7, 11]
+    : [0, 4, 7];
+  const root = (octave + 1) * 12 + pc;
+  return intervals.map(i => root + i);
+}
+
+function buildProcessResult({ time, style, sections, sectionState, master, swell }) {
+  const activeSections = sections
+    .filter(s => !(sectionState[s.id]?.mute))
+    .map(s => ({
+      id: s.id,
+      zh: s.zh,
+      en: s.en,
+      family: s.family,
+      intensity: sectionState[s.id]?.intensity ?? 60,
+      solo: Boolean(sectionState[s.id]?.solo),
+    }));
+  const styleMeta = STYLES.find(s => s.id === style) || STYLES[0];
+  const capturedSeconds = clamp(time || 12, 1, 12);
+
+  return {
+    id: 'take_' + Date.now().toString(36),
+    durationSeconds: 12.4,
+    capturedSeconds,
+    style,
+    styleName: `${styleMeta.zh} · ${styleMeta.en}`,
+    activeSections,
+    master,
+    swell,
+    tempo: 92,
+    key: 'C major',
+    notes: TRACK.length,
+    chords: TRACK.map(t => t.chord),
+    vocal: '乾聲 + Hall A',
+    mix: `自動配重 · ${styleMeta.zh}`,
+    lufs: '-14.0',
+    format: 'WAV · 48 kHz · 24-bit',
+  };
+}
+
+function clearPlaybackEngine(ref) {
+  const engine = ref.current;
+  if (engine.raf) cancelAnimationFrame(engine.raf);
+  if (engine.ctx) engine.ctx.close().catch(() => {});
+  ref.current = { ctx: null, raf: null, startedAt: 0, duration: 0 };
+}
+
+function createHallImpulse(ctx, seconds = 1.7, decay = 2.8) {
+  const length = Math.floor(ctx.sampleRate * seconds);
+  const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+  for (let ch = 0; ch < impulse.numberOfChannels; ch += 1) {
+    const data = impulse.getChannelData(ch);
+    for (let i = 0; i < length; i += 1) {
+      const t = i / length;
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, decay);
+    }
+  }
+  return impulse;
+}
+
+function scheduleTone(ctx, destination, midi, startSeconds, durationSeconds, type, gainValue) {
+  const start = ctx.currentTime + startSeconds;
+  const stop = start + durationSeconds;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.value = midiToFrequency(midi);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, gainValue), start + 0.025);
+  gain.gain.setTargetAtTime(0.0001, Math.max(start + 0.04, stop - 0.12), 0.045);
+  osc.connect(gain);
+  gain.connect(destination);
+  osc.start(start);
+  osc.stop(stop + 0.12);
+}
+
+function startProcessedPreview(result, playbackRef, setPlayback) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) {
+    setPlayback({ state: 'error', progress: 0 });
+    return;
+  }
+
+  clearPlaybackEngine(playbackRef);
+  const ctx = new AudioContextClass();
+  const master = ctx.createGain();
+  const voiceBus = ctx.createGain();
+  const ensembleBus = ctx.createGain();
+  const dryGain = ctx.createGain();
+  const wetGain = ctx.createGain();
+  const convolver = ctx.createConvolver();
+
+  master.gain.value = clamp(0.18 + (result.master + 30) / 180, 0.10, 0.32);
+  voiceBus.gain.value = 0.82;
+  ensembleBus.gain.value = clamp(0.16 + result.swell / 460, 0.16, 0.38);
+  dryGain.gain.value = 0.66;
+  wetGain.gain.value = 0.28;
+  convolver.buffer = createHallImpulse(ctx);
+
+  voiceBus.connect(dryGain);
+  voiceBus.connect(wetGain);
+  dryGain.connect(master);
+  wetGain.connect(convolver);
+  convolver.connect(master);
+  ensembleBus.connect(master);
+  master.connect(ctx.destination);
+
+  const offset = 0.08;
+  TRACK.forEach((line, index) => {
+    const nextT = TRACK[index + 1]?.t ?? result.durationSeconds;
+    const dur = Math.max(0.28, nextT - line.t - 0.06);
+    const midi = PITCH_TO_MIDI[line.pitch] || 60;
+    scheduleTone(ctx, voiceBus, midi, offset + line.t, dur, 'sine', 0.18);
+
+    const chordDur = Math.max(0.7, nextT - line.t);
+    chordToMidis(line.chord, 3).forEach((note, noteIndex) => {
+      scheduleTone(ctx, ensembleBus, note, offset + line.t + noteIndex * 0.018, chordDur, 'triangle', 0.035);
+    });
+    scheduleTone(ctx, ensembleBus, chordToMidis(line.chord, 2)[0] - 12, offset + line.t, chordDur * 0.96, 'sine', 0.055);
+  });
+
+  const hasPulse = result.activeSections.some(s => ['drums', 'perc'].includes(s.family));
+  if (hasPulse) {
+    for (let beat = 0; beat < result.durationSeconds; beat += 60 / result.tempo) {
+      const downbeat = Math.round(beat / (60 / result.tempo)) % 4 === 0;
+      scheduleTone(ctx, ensembleBus, downbeat ? 58 : 72, offset + beat, 0.075, 'square', downbeat ? 0.04 : 0.022);
+    }
+  }
+
+  const startedAt = performance.now();
+  const duration = result.durationSeconds + 0.25;
+  playbackRef.current = { ctx, raf: null, startedAt, duration };
+  setPlayback({ state: 'playing', progress: 0 });
+
+  const tick = () => {
+    const elapsed = (performance.now() - startedAt) / 1000;
+    const progress = clamp((elapsed / duration) * 100, 0, 100);
+    if (progress >= 100) {
+      clearPlaybackEngine(playbackRef);
+      setPlayback({ state: 'idle', progress: 100 });
+      return;
+    }
+    setPlayback({ state: 'playing', progress });
+    playbackRef.current.raf = requestAnimationFrame(tick);
+  };
+  playbackRef.current.raf = requestAnimationFrame(tick);
+}
 
 // Reactive breakpoint hook — true while viewport is at or below `bp` px.
 // Mobile layout drops the conductor stage entirely since pinching a 16-seat
@@ -250,7 +431,7 @@ function formatTime(s) {
 // ─────────────────────────────────────────────────────────────────────────────
 // LEFT RAIL — Voice / pitch / lyric
 
-function VoicePanel({ recording, time, current, pitchHistory }) {
+function VoicePanel({ recording, time, current, pitchHistory, processState, processResult, playback, onPlayResult, onProcessAgain }) {
   // pitch line drawing
   const pathD = useMemo(() => {
     if (!pitchHistory.length) return '';
@@ -301,6 +482,12 @@ function VoicePanel({ recording, time, current, pitchHistory }) {
         <Reading label="Loudness"   val="-14"  unit="LUFS" />
         <Reading label="Confidence" val="0.93" unit="" />
       </div>
+
+      <ProcessingPanel processState={processState}
+                       processResult={processResult}
+                       playback={playback}
+                       onPlayResult={onPlayResult}
+                       onProcessAgain={onProcessAgain} />
 
       <div className="lyric-card">
         <div className="panel-eyebrow">LYRIC · 歌詞辨識</div>
@@ -1156,9 +1343,91 @@ function Score({ time, recording }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PROCESSING / PLAYBACK
+
+function ProcessingPanel({ processState, processResult, playback, onPlayResult, onProcessAgain, compact = false }) {
+  const status = processState.status;
+  const isProcessing = status === 'processing';
+  const isReady = status === 'ready' && processResult;
+  const progress = isProcessing ? processState.progress : isReady ? 100 : 0;
+  const stage = PROCESS_STAGES[processState.stageIndex] || PROCESS_STAGES[0];
+  const playing = playback.state === 'playing';
+  const title = isProcessing ? stage.zh : isReady ? '處理完成' : status === 'error' ? '處理中斷' : '等待錄音';
+  const subtitle = isProcessing ? stage.detail : isReady ? `${processResult.format} · ${processResult.lufs} LUFS` : 'Record take queue';
+
+  return (
+    <section className={'process-panel ' + status + (compact ? ' compact' : '')}
+             data-testid="processing-panel"
+             aria-live="polite">
+      <div className="process-hd">
+        <div>
+          <div className="panel-eyebrow">PROCESS · 整合處理</div>
+          <div className="process-title">{title}<span>{stage.en}</span></div>
+        </div>
+        <div className="process-badge">{Math.round(progress)}%</div>
+      </div>
+
+      <div className="process-bar">
+        <div className="process-fill" style={{ width: progress + '%' }} />
+      </div>
+
+      {isProcessing && (
+        <div className="process-steps">
+          {PROCESS_STAGES.map((item, index) => (
+            <div key={item.zh}
+                 className={'process-step' + (index < processState.stageIndex ? ' done' : '') + (index === processState.stageIndex ? ' on' : '')}>
+              <span className="process-dot" />
+              <span>{item.zh}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!isProcessing && !isReady && (
+        <div className="process-empty">
+          <span className="process-empty-main">{subtitle}</span>
+          <span className="process-empty-sub">停止錄音後會自動分析、套用效果並建立可播放預覽。</span>
+        </div>
+      )}
+
+      {isReady && (
+        <>
+          <div className="result-grid">
+            <ResultItem label="Vocal" value={processResult.vocal} />
+            <ResultItem label="Mix" value={processResult.mix} />
+            <ResultItem label="Score" value={`${processResult.notes} notes · ${processResult.key}`} />
+            <ResultItem label="Parts" value={`${processResult.activeSections.length} sections`} />
+          </div>
+          <div className="transport">
+            <button className={'btn ' + (playing ? 'btn-stop' : 'btn-rec')}
+                    onClick={onPlayResult}
+                    data-testid="play-result">
+              {playing ? <><span className="rec-square" /> 停止播放</> : <><span className="play-triangle" /> 播放處理結果</>}
+            </button>
+            <button className="btn btn-ghost" onClick={onProcessAgain}>重新處理</button>
+          </div>
+          <div className="playback-bar" data-on={playing ? '1' : '0'}>
+            <div className="playback-fill" style={{ width: playback.progress + '%' }} />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ResultItem({ label, value }) {
+  return (
+    <div className="result-item">
+      <span>{label}</span>
+      <b>{value}</b>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // EXPORT MODAL
 
-function ExportModal({ open, onClose }) {
+function ExportModal({ open, onClose, processState, processResult, playback, onPlayResult, onProcessAgain }) {
   const [stage, setStage] = useState(0); // 0 idle, 1 rendering, 2 done
   const [pct, setPct] = useState(0);
 
@@ -1167,6 +1436,10 @@ function ExportModal({ open, onClose }) {
   }, [open]);
 
   const start = () => {
+    if (!processResult) {
+      onProcessAgain();
+      return;
+    }
     setStage(1); setPct(0);
     const iv = setInterval(() => {
       setPct(p => {
@@ -1192,20 +1465,26 @@ function ExportModal({ open, onClose }) {
         {stage < 2 ? (
           <>
             <div className="export-grid">
-              <ExportRow label="檔案格式 / Format"   value="WAV · 48 kHz · 24-bit" />
-              <ExportRow label="人聲處理 / Vocal"    value="保留乾聲 + Reverb · Hall A" />
-              <ExportRow label="樂器混音 / Mix"      value="自動配重 · 套用「電影配樂」" />
-              <ExportRow label="總長度 / Duration"   value="00:12.40" />
-              <ExportRow label="LUFS"                value="-14.0 (streaming)" />
+              <ExportRow label="檔案格式 / Format"   value={processResult?.format || 'WAV · 48 kHz · 24-bit'} />
+              <ExportRow label="人聲處理 / Vocal"    value={processResult?.vocal || '保留乾聲 + Reverb · Hall A'} />
+              <ExportRow label="樂器混音 / Mix"      value={processResult?.mix || '自動配重 · 等待處理結果'} />
+              <ExportRow label="總長度 / Duration"   value={processResult ? formatTime(processResult.durationSeconds) : '00:12.40'} />
+              <ExportRow label="LUFS"                value={(processResult?.lufs || '-14.0') + ' (streaming)'} />
             </div>
+            <ProcessingPanel processState={processState}
+                             processResult={processResult}
+                             playback={playback}
+                             onPlayResult={onPlayResult}
+                             onProcessAgain={onProcessAgain}
+                             compact />
             <div className="export-progress" data-on={stage === 1 ? '1' : '0'}>
               <div className="export-bar"><div className="export-fill" style={{ width: pct + '%' }} /></div>
               <div className="export-pct">{Math.round(pct)}%</div>
             </div>
             <div className="modal-actions">
               <button className="btn btn-ghost" onClick={onClose}>取消</button>
-              <button className="btn btn-rec" onClick={start} disabled={stage === 1}>
-                {stage === 1 ? '渲染中…' : '開始渲染 / Render'}
+              <button className="btn btn-rec" onClick={start} disabled={stage === 1 || processState.status === 'processing'}>
+                {processState.status === 'processing' ? '處理中…' : stage === 1 ? '渲染中…' : processResult ? '開始渲染 / Render' : '開始整合處理'}
               </button>
             </div>
           </>
@@ -1401,6 +1680,11 @@ function App() {
   const [baton, setBaton] = useState({ x: 700, y: 480 });
   const [pitchHistory, setPitchHistory] = useState([]);
   const [exportOpen, setExportOpen] = useState(false);
+  const [processState, setProcessState] = useState({ status: 'idle', progress: 0, stageIndex: 0 });
+  const [processResult, setProcessResult] = useState(null);
+  const [playback, setPlayback] = useState({ state: 'idle', progress: 0 });
+  const processTimerRef = useRef(null);
+  const playbackRef = useRef({ ctx: null, raf: null, startedAt: 0, duration: 0 });
 
   const [favorites, setFavorites] = useState(() => {
     try {
@@ -1482,15 +1766,74 @@ function App() {
     return cur;
   }, [time]);
 
+  const stopPlayback = () => {
+    clearPlaybackEngine(playbackRef);
+    setPlayback({ state: 'idle', progress: 0 });
+  };
+
+  const startProcessing = () => {
+    stopPlayback();
+    if (processTimerRef.current) clearInterval(processTimerRef.current);
+    setProcessResult(null);
+    setProcessState({ status: 'processing', progress: 0, stageIndex: 0 });
+
+    const startedAt = performance.now();
+    const durationMs = 4200;
+    processTimerRef.current = setInterval(() => {
+      const elapsed = performance.now() - startedAt;
+      const progress = clamp((elapsed / durationMs) * 100, 0, 100);
+      const stageIndex = clamp(
+        Math.floor((progress / 100) * PROCESS_STAGES.length),
+        0,
+        PROCESS_STAGES.length - 1
+      );
+
+      if (progress >= 100) {
+        clearInterval(processTimerRef.current);
+        processTimerRef.current = null;
+        const result = buildProcessResult({ time, style, sections, sectionState, master, swell });
+        setProcessResult(result);
+        setProcessState({ status: 'ready', progress: 100, stageIndex: PROCESS_STAGES.length - 1 });
+        return;
+      }
+
+      setProcessState({ status: 'processing', progress, stageIndex });
+    }, 90);
+  };
+
+  const onPlayResult = () => {
+    if (playback.state === 'playing') {
+      stopPlayback();
+      return;
+    }
+    if (!processResult) return;
+    startProcessedPreview(processResult, playbackRef, setPlayback);
+  };
+
   const onToggleRec = () => {
     if (recording) {
       setRecording(false);
+      startProcessing();
     } else {
+      if (processTimerRef.current) {
+        clearInterval(processTimerRef.current);
+        processTimerRef.current = null;
+      }
+      stopPlayback();
+      setProcessState({ status: 'idle', progress: 0, stageIndex: 0 });
+      setProcessResult(null);
       setRecording(true);
       setTime(0);
       setPitchHistory([]);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (processTimerRef.current) clearInterval(processTimerRef.current);
+      clearPlaybackEngine(playbackRef);
+    };
+  }, []);
 
   // On mobile we skip the conductor stage entirely; if the saved/default mode
   // was 'conductor', flip to 'mixer' so the first paint is meaningful.
@@ -1515,6 +1858,15 @@ function App() {
 
         <MobileVoiceStrip recording={recording} time={time}
                           current={current} pitchHistory={pitchHistory} />
+
+        <div className="m-process-wrap">
+          <ProcessingPanel processState={processState}
+                           processResult={processResult}
+                           playback={playback}
+                           onPlayResult={onPlayResult}
+                           onProcessAgain={startProcessing}
+                           compact />
+        </div>
 
         <main className="m-body">
           {activeMode === 'mixer' && (
@@ -1549,7 +1901,12 @@ function App() {
           <button className="btn btn-ghost m-recbar-export" onClick={() => setExportOpen(true)}>匯出</button>
         </div>
 
-        <ExportModal open={exportOpen} onClose={() => setExportOpen(false)} />
+        <ExportModal open={exportOpen} onClose={() => setExportOpen(false)}
+                     processState={processState}
+                     processResult={processResult}
+                     playback={playback}
+                     onPlayResult={onPlayResult}
+                     onProcessAgain={startProcessing} />
         <ApplyDOMFlags showLatin={t.showLatin} haloIntensity={t.haloIntensity} />
       </div>
     );
@@ -1563,7 +1920,12 @@ function App() {
               onExport={() => setExportOpen(true)} />
 
       <main className="grid">
-        <VoicePanel recording={recording} time={time} current={current} pitchHistory={pitchHistory} />
+        <VoicePanel recording={recording} time={time} current={current} pitchHistory={pitchHistory}
+                    processState={processState}
+                    processResult={processResult}
+                    playback={playback}
+                    onPlayResult={onPlayResult}
+                    onProcessAgain={startProcessing} />
 
         <section className="center">
           <div className="center-hd">
@@ -1602,7 +1964,12 @@ function App() {
                        onDeleteFavorite={onDeleteFavorite} />
       </main>
 
-      <ExportModal open={exportOpen} onClose={() => setExportOpen(false)} />
+      <ExportModal open={exportOpen} onClose={() => setExportOpen(false)}
+                   processState={processState}
+                   processResult={processResult}
+                   playback={playback}
+                   onPlayResult={onPlayResult}
+                   onProcessAgain={startProcessing} />
 
       <TweaksPanel title="Tweaks">
         <TweakSection label="Theme">

@@ -1,0 +1,10 @@
+song: mary_lamb
+file: Mary Had A Little Lamb _ Acapella Solo Singing Cover +4Semitone 8kHz.wav
+sample_rate: 8000        duration_sec: 82.6166
+expected_key_pc: 10   detected_key: Bb minor   [OK]
+expected_bpm: 60-180   detected_bpm: 133.929   [OK]
+expected_root_midi: 68 (pc=8)   median_midi: 69 (pc=9)   [OK]
+expected_notes: 8-400   detected_notes: 328   [OK]
+voiced_ratio: 0.752132   pitch_stability_cents: 24.7709   stable_pitch_frame_ratio: 0.504896   stable_pitch_frames: 3919
+export_sizes:   midi_bytes: 2910   musicxml_chars: 85376
+chord_progressions: 5   lyric_alignments: 9   preview_samples: 657376

@@ -1,0 +1,10 @@
+song: twinkle_fast
+file: Twinkle Twinkle Little Star - Acapella +4Semitone 8kHz.wav
+sample_rate: 8000        duration_sec: 23.0505
+expected_key_pc: 4   detected_key: Ab minor   [OK]
+expected_bpm: 60-180   detected_bpm: 133.929   [OK]
+expected_root_midi: 64 (pc=4)   median_midi: 69 (pc=9)   [OK]
+expected_notes: 10-200   detected_notes: 82   [OK]
+voiced_ratio: 0.899443   pitch_stability_cents: 21.0507   stable_pitch_frame_ratio: 0.622437   stable_pitch_frames: 1609
+export_sizes:   midi_bytes: 775   musicxml_chars: 22949
+chord_progressions: 5   lyric_alignments: 10   preview_samples: 184992
