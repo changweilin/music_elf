@@ -156,6 +156,18 @@ CorePipelineResult run_core_pipeline(
         result.lyric_alignments.size(),
         local_config.musicxml);
 
+    if (local_config.render_preview_audio) {
+        local_config.renderer.sample_rate = audio.sample_rate;
+        result.instrumental_audio = render_notes_to_audio(
+            result.accompaniment_notes.data(),
+            result.accompaniment_notes.size(),
+            local_config.renderer);
+        result.vocal_band_audio = mix_audio_buffers(
+            audio,
+            result.instrumental_audio,
+            local_config.vocal_band_mix);
+    }
+
     return result;
 }
 

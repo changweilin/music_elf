@@ -24,14 +24,24 @@ struct AudioRendererConfig {
     double release_seconds = 0.04;
 };
 
+struct AudioMixConfig {
+    float source_gain = 1.0f;
+    float overlay_gain = 1.0f;
+    bool normalize_peak = true;
+};
+
 AudioBuffer render_notes_to_audio(
     const GeneratedNote* notes,
     std::size_t count,
     const AudioRendererConfig& config = AudioRendererConfig{});
+
+AudioBuffer mix_audio_buffers(
+    const AudioBuffer& source,
+    const AudioBuffer& overlay,
+    const AudioMixConfig& config = AudioMixConfig{});
 
 const char* preview_waveform_name(PreviewWaveform waveform) noexcept;
 
 }  // namespace music_elf
 
 #endif  // MUSIC_ELF_AUDIO_RENDERER_HPP
-

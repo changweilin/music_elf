@@ -102,6 +102,12 @@ void test_chord_symbols() {
     require(chord_symbol(jazz->chords[2]) == "Cmaj7", "jazz I chord");
 }
 
+void test_empty_input_has_no_progressions() {
+    HarmonyAnalyzer analyzer;
+    const auto progressions = analyzer.generate_chord_progressions(nullptr, 0);
+    require(progressions.empty(), "empty input should not invent chord progressions");
+}
+
 }  // namespace
 
 int main() {
@@ -109,6 +115,7 @@ int main() {
         test_detects_c_major_key();
         test_generates_style_candidates();
         test_chord_symbols();
+        test_empty_input_has_no_progressions();
     } catch (const std::exception& error) {
         std::cerr << "harmony_tests failed: " << error.what() << '\n';
         return EXIT_FAILURE;
@@ -117,4 +124,3 @@ int main() {
     std::cout << "harmony_tests passed\n";
     return EXIT_SUCCESS;
 }
-

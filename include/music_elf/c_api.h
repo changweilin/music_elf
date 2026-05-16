@@ -46,6 +46,12 @@ typedef struct MusicElfPipelineSummary {
     size_t musicxml_char_count;
 } MusicElfPipelineSummary;
 
+typedef struct MusicElfPipelineSummaryV2 {
+    MusicElfPipelineSummary base;
+    size_t instrumental_sample_count;
+    size_t vocal_band_sample_count;
+} MusicElfPipelineSummaryV2;
+
 MusicElfPitchDetectorConfig music_elf_default_pitch_detector_config(void);
 
 int music_elf_pitch_detector_create(
@@ -66,11 +72,29 @@ int music_elf_process_wav_to_midi(const char* input_wav_path, const char* output
 
 int music_elf_analyze_wav(const char* input_wav_path, MusicElfPipelineSummary* out_summary);
 
+int music_elf_analyze_wav_v2(const char* input_wav_path, MusicElfPipelineSummaryV2* out_summary);
+
 int music_elf_process_wav_to_outputs(
     const char* input_wav_path,
     const char* output_midi_path,
     const char* output_musicxml_path,
     MusicElfPipelineSummary* out_summary);
+
+int music_elf_process_wav_to_outputs_v2(
+    const char* input_wav_path,
+    const char* output_midi_path,
+    const char* output_musicxml_path,
+    MusicElfPipelineSummaryV2* out_summary);
+
+int music_elf_process_wav_to_vocal_band(
+    const char* input_wav_path,
+    const char* output_wav_path,
+    MusicElfPipelineSummary* out_summary);
+
+int music_elf_process_wav_to_vocal_band_v2(
+    const char* input_wav_path,
+    const char* output_wav_path,
+    MusicElfPipelineSummaryV2* out_summary);
 
 const char* music_elf_last_error(void);
 

@@ -42,6 +42,7 @@ struct PitchStabilitySummary {
 void print_usage() {
     std::cout
         << "Usage: music_elf_cli <input.wav> [--out-midi file.mid] [--out-musicxml file.musicxml]\n"
+        << "                     [--out-wav vocal_band.wav]\n"
         << "                     [--lyrics \"word word\"] [--pattern block|arpeggio|broken|pad]\n"
         << "                     [--analysis-wav file.wav]\n"
         << "       music_elf_cli inspect <input.wav> [--out-summary file]\n"
@@ -236,24 +237,6 @@ std::vector<CatalogChordType> select_chords(const std::string& value) {
     return selected;
 }
 
-std::vector<music_elf::GeneratedNote> make_preview_notes(
-    const music_elf::CorePipelineResult& result,
-    const CorePipelineConfig& config) {
-    std::vector<music_elf::GeneratedNote> notes;
-    notes.reserve(result.notes.size() + result.accompaniment_notes.size());
-    for (std::size_t i = 0; i < result.notes.size(); ++i) {
-        music_elf::GeneratedNote note;
-        note.start_seconds = result.notes[i].start_seconds;
-        note.end_seconds = result.notes[i].end_seconds;
-        note.midi_note = result.notes[i].midi_note;
-        note.velocity = i < result.dynamics.size() ? result.dynamics[i].velocity : config.midi.melody_velocity;
-        note.channel = config.midi.melody_channel;
-        notes.push_back(note);
-    }
-    notes.insert(notes.end(), result.accompaniment_notes.begin(), result.accompaniment_notes.end());
-    return notes;
-}
-
 PitchStabilitySummary summarize_pitch_stability(
     const std::vector<music_elf::PitchEstimate>& estimates) {
     PitchStabilitySummary summary;
@@ -331,6 +314,8 @@ void write_pipeline_summary(
     out << "lyric_alignments: " << result.lyric_alignments.size() << "\n";
     out << "midi_bytes: " << result.midi_bytes.size() << "\n";
     out << "musicxml_chars: " << result.musicxml.size() << "\n";
+    out << "instrumental_samples: " << result.instrumental_audio.samples.size() << "\n";
+    out << "vocal_band_samples: " << result.vocal_band_audio.samples.size() << "\n";
 }
 
 void emit_summary(const std::string& summary, const std::string& output_path) {
@@ -460,18 +445,19 @@ int run_render_preview(int argc, char** argv) {
     const std::string analysis_path = analysis_wav_path.empty() ? input_path : analysis_wav_path;
     const auto audio = music_elf::read_wav_file(analysis_path);
     render_config.sample_rate = audio.sample_rate;
+    options.config.renderer = render_config;
+    options.config.render_preview_audio = true;
     const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
-    const auto preview_notes = make_preview_notes(result, options.config);
-    const auto preview = music_elf::render_notes_to_audio(preview_notes.data(), preview_notes.size(), render_config);
-    music_elf::write_wav_file(out_wav, preview);
+    music_elf::write_wav_file(out_wav, result.vocal_band_audio);
 
-    std::cout << "Rendered pipeline preview WAV\n";
+    std::cout << "Rendered vocal-band preview WAV\n";
     std::cout << "Input: " << input_path << "\n";
     if (analysis_path != input_path) {
         std::cout << "Analysis input: " << analysis_path << "\n";
     }
     std::cout << "Waveform: " << music_elf::preview_waveform_name(render_config.waveform) << "\n";
-    std::cout << "Preview notes: " << preview_notes.size() << "\n";
+    std::cout << "Band notes: " << result.accompaniment_notes.size() << "\n";
+    std::cout << "Vocal-band samples: " << result.vocal_band_audio.samples.size() << "\n";
     std::cout << "Output: " << out_wav << "\n";
     return 0;
 }
@@ -746,6 +732,7 @@ int main(int argc, char** argv) {
         std::string out_midi = base.replace_extension(".mid").string();
         base = std::filesystem::path(input_path);
         std::string out_musicxml = base.replace_extension(".musicxml").string();
+        std::string out_wav;
         PipelineOptions options;
         std::string analysis_wav_path;
 
@@ -759,6 +746,8 @@ int main(int argc, char** argv) {
                 out_midi = require_value(i, argc, argv, arg);
             } else if (arg == "--out-musicxml" && i + 1 < argc) {
                 out_musicxml = require_value(i, argc, argv, arg);
+            } else if (arg == "--out-wav" && i + 1 < argc) {
+                out_wav = require_value(i, argc, argv, arg);
             } else if (parse_audio_input_option(arg, i, argc, argv, analysis_wav_path)) {
             } else if (parse_pipeline_option(arg, i, argc, argv, options)) {
             } else {
@@ -768,10 +757,14 @@ int main(int argc, char** argv) {
 
         const std::string analysis_path = analysis_wav_path.empty() ? input_path : analysis_wav_path;
         const auto audio = music_elf::read_wav_file(analysis_path);
+        options.config.render_preview_audio = !out_wav.empty();
         const auto result = music_elf::run_core_pipeline(audio, options.lyrics, options.config);
 
         write_binary_file(out_midi, result.midi_bytes);
         write_text_file(out_musicxml, result.musicxml);
+        if (!out_wav.empty()) {
+            music_elf::write_wav_file(out_wav, result.vocal_band_audio);
+        }
 
         std::cout << "Music Elf analysis complete\n";
         std::cout << "Input: " << input_path << "\n";
@@ -785,6 +778,9 @@ int main(int argc, char** argv) {
         std::cout << "Accompaniment notes: " << result.accompaniment_notes.size() << "\n";
         std::cout << "Wrote MIDI: " << out_midi << "\n";
         std::cout << "Wrote MusicXML: " << out_musicxml << "\n";
+        if (!out_wav.empty()) {
+            std::cout << "Wrote Vocal-band WAV: " << out_wav << "\n";
+        }
     } catch (const std::exception& error) {
         std::cerr << "music_elf_cli failed: " << error.what() << "\n";
         return 1;

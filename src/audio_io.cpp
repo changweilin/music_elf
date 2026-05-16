@@ -11,6 +11,10 @@
 namespace music_elf {
 namespace {
 
+constexpr std::uint16_t kWaveFormatPcm = 0x0001;
+constexpr std::uint16_t kWaveFormatIeeeFloat = 0x0003;
+constexpr std::uint16_t kWaveFormatExtensible = 0xfffe;
+
 std::uint16_t read_u16(const std::vector<std::uint8_t>& data, std::size_t offset) {
     return static_cast<std::uint16_t>(data[offset] | (data[offset + 1] << 8));
 }
@@ -45,6 +49,22 @@ bool chunk_id_is(const std::vector<std::uint8_t>& data, std::size_t offset, cons
            data[offset + 1] == static_cast<std::uint8_t>(id[1]) &&
            data[offset + 2] == static_cast<std::uint8_t>(id[2]) &&
            data[offset + 3] == static_cast<std::uint8_t>(id[3]);
+}
+
+bool extensible_subformat_is(const std::vector<std::uint8_t>& data,
+                             std::size_t offset,
+                             std::uint16_t format_tag) {
+    static constexpr std::uint8_t kWaveSubformatTail[] = {
+        0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
+        0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
+    };
+
+    if (read_u32(data, offset) != static_cast<std::uint32_t>(format_tag)) {
+        return false;
+    }
+    return std::equal(std::begin(kWaveSubformatTail),
+                      std::end(kWaveSubformatTail),
+                      data.begin() + static_cast<std::ptrdiff_t>(offset + 4));
 }
 
 float read_pcm_sample(const std::vector<std::uint8_t>& data, std::size_t offset, std::uint16_t bits_per_sample) {
@@ -127,6 +147,23 @@ AudioBuffer read_wav_file(const std::string& path) {
             channels = read_u16(data, payload + 2);
             sample_rate = read_u32(data, payload + 4);
             bits_per_sample = read_u16(data, payload + 14);
+            if (audio_format == kWaveFormatExtensible) {
+                if (chunk_size < 40) {
+                    throw std::runtime_error("WAVE_FORMAT_EXTENSIBLE fmt chunk is too small");
+                }
+                const std::uint16_t extension_size = read_u16(data, payload + 16);
+                if (extension_size < 22) {
+                    throw std::runtime_error("WAVE_FORMAT_EXTENSIBLE extension is too small");
+                }
+                const std::size_t subformat_offset = payload + 24;
+                if (extensible_subformat_is(data, subformat_offset, kWaveFormatPcm)) {
+                    audio_format = kWaveFormatPcm;
+                } else if (extensible_subformat_is(data, subformat_offset, kWaveFormatIeeeFloat)) {
+                    audio_format = kWaveFormatIeeeFloat;
+                } else {
+                    throw std::runtime_error("unsupported WAVE_FORMAT_EXTENSIBLE subformat");
+                }
+            }
         } else if (chunk_id_is(data, offset, "data")) {
             data_offset = payload;
             data_size = chunk_size;
@@ -138,10 +175,10 @@ AudioBuffer read_wav_file(const std::string& path) {
     if (audio_format == 0 || channels == 0 || sample_rate == 0 || bits_per_sample == 0 || data_size == 0) {
         throw std::runtime_error("WAV file is missing fmt or data chunk");
     }
-    if (audio_format != 1 && audio_format != 3) {
-        throw std::runtime_error("only PCM and IEEE float WAV files are supported");
+    if (audio_format != kWaveFormatPcm && audio_format != kWaveFormatIeeeFloat) {
+        throw std::runtime_error("only PCM, IEEE float, and WAVE_FORMAT_EXTENSIBLE PCM/float WAV files are supported");
     }
-    if (audio_format == 3 && bits_per_sample != 32) {
+    if (audio_format == kWaveFormatIeeeFloat && bits_per_sample != 32) {
         throw std::runtime_error("only float32 IEEE WAV files are supported");
     }
 
@@ -156,7 +193,7 @@ AudioBuffer read_wav_file(const std::string& path) {
     audio.samples.reserve(data_size / bytes_per_sample);
     for (std::size_t sample_offset = data_offset; sample_offset + bytes_per_sample <= data_offset + data_size;
          sample_offset += bytes_per_sample) {
-        if (audio_format == 3) {
+        if (audio_format == kWaveFormatIeeeFloat) {
             audio.samples.push_back(read_float32_sample(data, sample_offset));
         } else {
             audio.samples.push_back(read_pcm_sample(data, sample_offset, bits_per_sample));

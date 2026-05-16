@@ -85,6 +85,16 @@ MusicElfPipelineSummary to_c_summary(
     return summary;
 }
 
+MusicElfPipelineSummaryV2 to_c_summary_v2(
+    const music_elf::AudioBuffer& audio,
+    const music_elf::CorePipelineResult& result) {
+    MusicElfPipelineSummaryV2 summary{};
+    summary.base = to_c_summary(audio, result);
+    summary.instrumental_sample_count = result.instrumental_audio.samples.size();
+    summary.vocal_band_sample_count = result.vocal_band_audio.samples.size();
+    return summary;
+}
+
 int write_binary_file(const char* path, const std::vector<std::uint8_t>& bytes) {
     std::ofstream out(path, std::ios::binary);
     if (!out) {
@@ -189,6 +199,23 @@ int music_elf_analyze_wav(const char* input_wav_path, MusicElfPipelineSummary* o
     }
 }
 
+int music_elf_analyze_wav_v2(const char* input_wav_path, MusicElfPipelineSummaryV2* out_summary) {
+    try {
+        clear_error();
+        if (input_wav_path == nullptr || out_summary == nullptr) {
+            return set_error("input path and summary output must not be null");
+        }
+        const auto audio = music_elf::read_wav_file(input_wav_path);
+        music_elf::CorePipelineConfig config;
+        config.render_preview_audio = true;
+        const auto result = music_elf::run_core_pipeline(audio, {}, config);
+        *out_summary = to_c_summary_v2(audio, result);
+        return 0;
+    } catch (const std::exception& error) {
+        return set_error(error.what());
+    }
+}
+
 int music_elf_process_wav_to_outputs(
     const char* input_wav_path,
     const char* output_midi_path,
@@ -213,6 +240,87 @@ int music_elf_process_wav_to_outputs(
         }
         if (out_summary != nullptr) {
             *out_summary = to_c_summary(audio, result);
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        return set_error(error.what());
+    }
+}
+
+int music_elf_process_wav_to_outputs_v2(
+    const char* input_wav_path,
+    const char* output_midi_path,
+    const char* output_musicxml_path,
+    MusicElfPipelineSummaryV2* out_summary) {
+    try {
+        clear_error();
+        if (input_wav_path == nullptr) {
+            return set_error("input path must not be null");
+        }
+        if (output_midi_path == nullptr && output_musicxml_path == nullptr && out_summary == nullptr) {
+            return set_error("at least one output path or summary output must be provided");
+        }
+
+        const auto audio = music_elf::read_wav_file(input_wav_path);
+        music_elf::CorePipelineConfig config;
+        config.render_preview_audio = out_summary != nullptr;
+        const auto result = music_elf::run_core_pipeline(audio, {}, config);
+        if (output_midi_path != nullptr && write_binary_file(output_midi_path, result.midi_bytes) != 0) {
+            return -1;
+        }
+        if (output_musicxml_path != nullptr && write_text_file(output_musicxml_path, result.musicxml) != 0) {
+            return -1;
+        }
+        if (out_summary != nullptr) {
+            *out_summary = to_c_summary_v2(audio, result);
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        return set_error(error.what());
+    }
+}
+
+int music_elf_process_wav_to_vocal_band(
+    const char* input_wav_path,
+    const char* output_wav_path,
+    MusicElfPipelineSummary* out_summary) {
+    try {
+        clear_error();
+        if (input_wav_path == nullptr || output_wav_path == nullptr) {
+            return set_error("input and output WAV paths must not be null");
+        }
+
+        const auto audio = music_elf::read_wav_file(input_wav_path);
+        music_elf::CorePipelineConfig config;
+        config.render_preview_audio = true;
+        const auto result = music_elf::run_core_pipeline(audio, {}, config);
+        music_elf::write_wav_file(output_wav_path, result.vocal_band_audio);
+        if (out_summary != nullptr) {
+            *out_summary = to_c_summary(audio, result);
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        return set_error(error.what());
+    }
+}
+
+int music_elf_process_wav_to_vocal_band_v2(
+    const char* input_wav_path,
+    const char* output_wav_path,
+    MusicElfPipelineSummaryV2* out_summary) {
+    try {
+        clear_error();
+        if (input_wav_path == nullptr || output_wav_path == nullptr) {
+            return set_error("input and output WAV paths must not be null");
+        }
+
+        const auto audio = music_elf::read_wav_file(input_wav_path);
+        music_elf::CorePipelineConfig config;
+        config.render_preview_audio = true;
+        const auto result = music_elf::run_core_pipeline(audio, {}, config);
+        music_elf::write_wav_file(output_wav_path, result.vocal_band_audio);
+        if (out_summary != nullptr) {
+            *out_summary = to_c_summary_v2(audio, result);
         }
         return 0;
     } catch (const std::exception& error) {

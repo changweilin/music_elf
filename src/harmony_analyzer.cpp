@@ -185,6 +185,9 @@ std::vector<ChordProgression> HarmonyAnalyzer::generate_chord_progressions(
     if (count > 0 && notes == nullptr) {
         throw std::invalid_argument("notes must not be null when count is non-zero");
     }
+    if (count == 0) {
+        return {};
+    }
 
     const KeyEstimate key = detect_key(notes, count);
     std::vector<ChordProgression> progressions;

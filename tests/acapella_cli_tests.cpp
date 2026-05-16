@@ -7,15 +7,18 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #ifndef MUSIC_ELF_ACAPELLA_DIR
-#define MUSIC_ELF_ACAPELLA_DIR "data/acapella"
+#define MUSIC_ELF_ACAPELLA_DIR "data/acapella/fixtures"
 #endif
 #ifndef MUSIC_ELF_ACAPELLA_OUT
 #define MUSIC_ELF_ACAPELLA_OUT "acapella_outputs"
@@ -46,6 +49,31 @@ int run_cli(const std::string& cli_path, const std::string& argv_tail) {
 
 std::string q(const fs::path& p) {
     return std::string("\"") + p.string() + "\"";
+}
+
+fs::path find_cli_fixture() {
+    const fs::path root{MUSIC_ELF_ACAPELLA_DIR};
+    const fs::path preferred =
+        root / "Twinkle twinkle little star Acapella-I8XV8UR-8Vg.wav";
+    if (fs::exists(preferred)) {
+        return preferred;
+    }
+
+    std::vector<fs::path> wavs;
+    if (fs::exists(root)) {
+        for (const auto& entry : fs::recursive_directory_iterator(root)) {
+            if (!entry.is_regular_file()) continue;
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext == ".wav") {
+                wavs.push_back(entry.path());
+            }
+        }
+    }
+    std::sort(wavs.begin(), wavs.end());
+    require(!wavs.empty(), "missing acapella WAVs under: " + root.string());
+    return wavs.front();
 }
 
 void test_default_export(const std::string& cli_path,
@@ -89,6 +117,8 @@ void test_inspect(const std::string& cli_path,
             "inspect summary missing stable_pitch_frame_ratio");
     require(file_contains(summary, "musicxml_chars:"),
             "inspect summary missing musicxml_chars");
+    require(file_contains(summary, "vocal_band_samples:"),
+            "inspect summary missing vocal_band_samples");
 }
 
 void test_benchmark(const std::string& cli_path,
@@ -133,8 +163,7 @@ int main(int argc, char** argv) {
     try {
         require(argc == 2, "expected path to music_elf_cli");
         const std::string cli_path = argv[1];
-        const fs::path wav = fs::path{MUSIC_ELF_ACAPELLA_DIR} /
-                             "Twinkle Twinkle Little Star - Acapella +4Semitone 8kHz.wav";
+        const fs::path wav = find_cli_fixture();
         require(fs::exists(wav), "missing acapella WAV: " + wav.string());
 
         const fs::path out_dir = fs::path{MUSIC_ELF_ACAPELLA_OUT} / "cli";

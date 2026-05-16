@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 namespace music_elf {
 namespace {
@@ -40,6 +41,45 @@ float envelope(double time, double duration, const AudioRendererConfig& config) 
     return static_cast<float>(std::max(0.0, std::min(fade_in, fade_out)));
 }
 
+std::size_t validated_frame_count(const AudioBuffer& audio, const char* name) {
+    if (audio.sample_rate <= 0) {
+        throw std::invalid_argument(std::string(name) + " sample_rate must be positive");
+    }
+    if (audio.channels <= 0) {
+        throw std::invalid_argument(std::string(name) + " channels must be positive");
+    }
+    if (audio.samples.size() % static_cast<std::size_t>(audio.channels) != 0) {
+        throw std::invalid_argument(std::string(name) + " sample count must be divisible by channel count");
+    }
+    return audio.samples.size() / static_cast<std::size_t>(audio.channels);
+}
+
+float sample_for_output_channel(
+    const AudioBuffer& audio,
+    std::size_t frame,
+    int channel,
+    int output_channels) {
+    const auto channels = static_cast<std::size_t>(audio.channels);
+    const auto base = frame * channels;
+    if (audio.channels == output_channels) {
+        return audio.samples[base + static_cast<std::size_t>(channel)];
+    }
+    if (audio.channels == 1) {
+        return audio.samples[base];
+    }
+    if (output_channels == 1) {
+        double sum = 0.0;
+        for (int input_channel = 0; input_channel < audio.channels; ++input_channel) {
+            sum += audio.samples[base + static_cast<std::size_t>(input_channel)];
+        }
+        return static_cast<float>(sum / static_cast<double>(audio.channels));
+    }
+    if (channel < audio.channels) {
+        return audio.samples[base + static_cast<std::size_t>(channel)];
+    }
+    return audio.samples[base + channels - 1];
+}
+
 }  // namespace
 
 AudioBuffer render_notes_to_audio(
@@ -54,6 +94,9 @@ AudioBuffer render_notes_to_audio(
     }
     if (config.master_gain < 0.0f) {
         throw std::invalid_argument("master_gain must be non-negative");
+    }
+    if (count == 0) {
+        return make_mono_audio(config.sample_rate, {});
     }
 
     double end_seconds = 0.0;
@@ -105,6 +148,66 @@ AudioBuffer render_notes_to_audio(
     return make_mono_audio(config.sample_rate, std::move(samples));
 }
 
+AudioBuffer mix_audio_buffers(
+    const AudioBuffer& source,
+    const AudioBuffer& overlay,
+    const AudioMixConfig& config) {
+    const std::size_t source_frames = validated_frame_count(source, "source");
+    const std::size_t overlay_frames = validated_frame_count(overlay, "overlay");
+    if (source.sample_rate != overlay.sample_rate) {
+        throw std::invalid_argument("source and overlay sample rates must match");
+    }
+    if (config.source_gain < 0.0f) {
+        throw std::invalid_argument("source_gain must be non-negative");
+    }
+    if (config.overlay_gain < 0.0f) {
+        throw std::invalid_argument("overlay_gain must be non-negative");
+    }
+
+    AudioBuffer mixed;
+    mixed.sample_rate = source.sample_rate;
+    mixed.channels = source.channels;
+
+    const std::size_t frames = std::max(source_frames, overlay_frames);
+    mixed.samples.assign(
+        frames * static_cast<std::size_t>(mixed.channels),
+        0.0f);
+
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        for (int channel = 0; channel < mixed.channels; ++channel) {
+            double value = 0.0;
+            if (frame < source_frames) {
+                value += static_cast<double>(
+                    sample_for_output_channel(source, frame, channel, mixed.channels)) *
+                    static_cast<double>(config.source_gain);
+            }
+            if (frame < overlay_frames) {
+                value += static_cast<double>(
+                    sample_for_output_channel(overlay, frame, channel, mixed.channels)) *
+                    static_cast<double>(config.overlay_gain);
+            }
+            mixed.samples[frame * static_cast<std::size_t>(mixed.channels) + static_cast<std::size_t>(channel)] =
+                static_cast<float>(value);
+        }
+    }
+
+    float peak = 0.0f;
+    for (float sample : mixed.samples) {
+        peak = std::max(peak, std::fabs(sample));
+    }
+    if (config.normalize_peak && peak > 1.0f) {
+        for (float& sample : mixed.samples) {
+            sample /= peak;
+        }
+    } else {
+        for (float& sample : mixed.samples) {
+            sample = std::clamp(sample, -1.0f, 1.0f);
+        }
+    }
+
+    return mixed;
+}
+
 const char* preview_waveform_name(PreviewWaveform waveform) noexcept {
     switch (waveform) {
         case PreviewWaveform::Sine:
@@ -120,4 +223,3 @@ const char* preview_waveform_name(PreviewWaveform waveform) noexcept {
 }
 
 }  // namespace music_elf
-

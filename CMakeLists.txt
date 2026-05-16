@@ -59,7 +59,7 @@ function(add_music_elf_test target)
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
-set(MUSIC_ELF_ACAPELLA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/acapella")
+set(MUSIC_ELF_ACAPELLA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/acapella/fixtures")
 set(MUSIC_ELF_ACAPELLA_OUT "${CMAKE_CURRENT_BINARY_DIR}/acapella_outputs")
 file(MAKE_DIRECTORY "${MUSIC_ELF_ACAPELLA_OUT}")
 

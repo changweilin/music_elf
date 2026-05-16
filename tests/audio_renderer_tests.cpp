@@ -54,12 +54,48 @@ void test_write_rendered_wav() {
     require(!loaded.samples.empty(), "preview wav samples");
 }
 
+void test_render_empty_notes_returns_empty_audio() {
+    music_elf::AudioRendererConfig config;
+    config.sample_rate = 48000;
+    const auto audio = music_elf::render_notes_to_audio(nullptr, 0, config);
+
+    require(audio.sample_rate == 48000, "empty render sample rate");
+    require(audio.channels == 1, "empty render channel count");
+    require(audio.samples.empty(), "empty render should not add a tail");
+}
+
+void test_mix_audio_buffers_preserves_source_channels() {
+    music_elf::AudioBuffer source;
+    source.sample_rate = 48000;
+    source.channels = 2;
+    source.samples = {
+        0.25f, -0.25f,
+        0.25f, -0.25f,
+    };
+
+    const auto overlay = music_elf::make_mono_audio(
+        48000,
+        std::vector<float>{0.50f, 0.50f});
+    music_elf::AudioMixConfig config;
+    config.normalize_peak = false;
+
+    const auto mixed = music_elf::mix_audio_buffers(source, overlay, config);
+
+    require(mixed.sample_rate == source.sample_rate, "mix sample rate");
+    require(mixed.channels == source.channels, "mix should preserve source channels");
+    require(mixed.samples.size() == source.samples.size(), "mix sample count");
+    require(std::fabs(mixed.samples[0] - 0.75f) < 0.0001f, "mix left channel");
+    require(std::fabs(mixed.samples[1] - 0.25f) < 0.0001f, "mix right channel");
+}
+
 }  // namespace
 
 int main() {
     try {
         test_render_notes_to_audio();
         test_write_rendered_wav();
+        test_render_empty_notes_returns_empty_audio();
+        test_mix_audio_buffers_preserves_source_channels();
     } catch (const std::exception& error) {
         std::cerr << "audio_renderer_tests failed: " << error.what() << '\n';
         return EXIT_FAILURE;
@@ -68,4 +104,3 @@ int main() {
     std::cout << "audio_renderer_tests passed\n";
     return EXIT_SUCCESS;
 }
-

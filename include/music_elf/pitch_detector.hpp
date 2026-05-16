@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <vector>
 
 namespace music_elf {
@@ -58,6 +59,7 @@ private:
     std::vector<float> analysis_frame_;
     std::vector<float> difference_;
     std::vector<float> cmnd_;
+    std::deque<PitchEstimate> pending_estimates_;
 };
 
 }  // namespace music_elf

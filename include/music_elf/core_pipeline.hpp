@@ -3,6 +3,7 @@
 
 #include "music_elf/accompaniment_generator.hpp"
 #include "music_elf/audio_io.hpp"
+#include "music_elf/audio_renderer.hpp"
 #include "music_elf/dynamics_analyzer.hpp"
 #include "music_elf/harmony_analyzer.hpp"
 #include "music_elf/lyric_aligner.hpp"
@@ -25,9 +26,12 @@ struct CorePipelineConfig {
     DynamicsAnalyzerConfig dynamics;
     HarmonyAnalyzerConfig harmony;
     AccompanimentGeneratorConfig accompaniment;
+    AudioRendererConfig renderer;
+    AudioMixConfig vocal_band_mix;
     MidiWriterConfig midi;
     MusicXmlWriterConfig musicxml;
     std::size_t processing_chunk_samples = 512;
+    bool render_preview_audio = false;
 };
 
 struct CorePipelineResult {
@@ -41,6 +45,8 @@ struct CorePipelineResult {
     std::vector<LyricAlignment> lyric_alignments;
     std::vector<std::uint8_t> midi_bytes;
     std::string musicxml;
+    AudioBuffer instrumental_audio;
+    AudioBuffer vocal_band_audio;
 };
 
 CorePipelineResult run_core_pipeline(
@@ -51,4 +57,3 @@ CorePipelineResult run_core_pipeline(
 }  // namespace music_elf
 
 #endif  // MUSIC_ELF_CORE_PIPELINE_HPP
-

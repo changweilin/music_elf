@@ -103,6 +103,15 @@ std::size_t PitchDetector::process(
 
     std::size_t written = 0;
 
+    while (written < out_capacity && !pending_estimates_.empty()) {
+        out[written] = pending_estimates_.front();
+        pending_estimates_.pop_front();
+        written += 1;
+    }
+    if (!pending_estimates_.empty()) {
+        return written;
+    }
+
     for (std::size_t i = 0; i < count; ++i) {
         ring_[ring_write_index_] = samples[i];
         ring_write_index_ = (ring_write_index_ + 1) % config_.frame_size;
@@ -118,6 +127,8 @@ std::size_t PitchDetector::process(
             if (written < out_capacity) {
                 out[written] = estimate;
                 written += 1;
+            } else {
+                pending_estimates_.push_back(estimate);
             }
         }
     }

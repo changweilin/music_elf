@@ -52,6 +52,7 @@ void test_pipeline_from_wav_to_exports() {
     const std::vector<music_elf::LyricToken> lyrics = {{"I"}, {"can"}, {"sing"}};
     music_elf::CorePipelineConfig config;
     config.accompaniment.pattern = music_elf::AccompanimentPattern::Arpeggio;
+    config.render_preview_audio = true;
     const auto result = music_elf::run_core_pipeline(loaded, lyrics, config);
 
     require(result.pitch_estimates.size() > 100, "pipeline should produce pitch frames");
@@ -62,6 +63,11 @@ void test_pipeline_from_wav_to_exports() {
     require(!result.lyric_alignments.empty(), "pipeline should align lyrics");
     require(result.midi_bytes.size() > 30, "pipeline should produce MIDI bytes");
     require(result.musicxml.find("<score-partwise") != std::string::npos, "pipeline should produce MusicXML");
+    require(!result.instrumental_audio.samples.empty(), "pipeline should render instrumental audio");
+    require(!result.vocal_band_audio.samples.empty(), "pipeline should render vocal-band audio");
+    require(result.vocal_band_audio.sample_rate == loaded.sample_rate, "vocal-band sample rate");
+    require(result.vocal_band_audio.channels == loaded.channels, "vocal-band channel count");
+    require(result.vocal_band_audio.samples.size() >= loaded.samples.size(), "vocal-band should include original vocal duration");
     require(result.musicxml.find("<measure number=\"2\">") != std::string::npos, "pipeline score should have measures");
     require(result.musicxml.find("<key><fifths>") != std::string::npos, "pipeline score should have key");
     require(result.musicxml.find("<time><beats>4</beats><beat-type>4</beat-type></time>") != std::string::npos,
@@ -72,11 +78,29 @@ void test_pipeline_from_wav_to_exports() {
     require(result.midi_bytes[0] == 'M' && result.midi_bytes[1] == 'T', "MIDI header");
 }
 
+void test_silence_does_not_invent_accompaniment() {
+    const int sample_rate = 48000;
+    const auto audio = music_elf::make_mono_audio(
+        sample_rate,
+        std::vector<float>(static_cast<std::size_t>(sample_rate), 0.0f));
+    music_elf::CorePipelineConfig config;
+    config.render_preview_audio = true;
+    const auto result = music_elf::run_core_pipeline(audio, {}, config);
+
+    require(result.notes.empty(), "silence should not produce notes");
+    require(result.chord_progressions.empty(), "silence should not produce chord progressions");
+    require(result.accompaniment_notes.empty(), "silence should not produce accompaniment");
+    require(result.instrumental_audio.samples.empty(), "silence should not render instrumental audio");
+    require(result.vocal_band_audio.samples.size() == audio.samples.size(),
+            "silent vocal-band should preserve source duration");
+}
+
 }  // namespace
 
 int main() {
     try {
         test_pipeline_from_wav_to_exports();
+        test_silence_does_not_invent_accompaniment();
     } catch (const std::exception& error) {
         std::cerr << "pipeline_integration_tests failed: " << error.what() << '\n';
         return EXIT_FAILURE;

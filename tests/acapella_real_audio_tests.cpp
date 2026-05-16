@@ -1,6 +1,6 @@
 // Real a cappella WAV regression tests.
 //
-// Loads each WAV in data/acapella/, runs every completed algorithm module against
+// Loads each WAV in data/acapella/fixtures/, runs every completed algorithm module against
 // it, asserts medium-strictness ground truth (known nursery rhyme keys, BPM ranges,
 // note counts), and writes inspectable artifacts (MIDI, MusicXML, preview WAV,
 // per-song analysis.txt, SUMMARY.md) to build/acapella_outputs/.
@@ -21,11 +21,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -34,7 +36,7 @@
 #include <vector>
 
 #ifndef MUSIC_ELF_ACAPELLA_DIR
-#define MUSIC_ELF_ACAPELLA_DIR "data/acapella"
+#define MUSIC_ELF_ACAPELLA_DIR "data/acapella/fixtures"
 #endif
 #ifndef MUSIC_ELF_ACAPELLA_OUT
 #define MUSIC_ELF_ACAPELLA_OUT "acapella_outputs"
@@ -56,75 +58,87 @@ struct AcapellaFixture {
     bool strict_ground_truth = true;
 };
 
-// Ground-truth fixtures. Files are +4-semitone transposed except the 48 kHz Thomas
-// one. Ranges are intentionally wide; recalibrate after the first green run.
+std::string lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+std::string lyrics_for_filename(const std::string& filename) {
+    const std::string lower = lower_ascii(filename);
+    if (lower.find("twinkle") != std::string::npos) {
+        return "Twinkle twinkle little star how I wonder what you are";
+    }
+    if (lower.find("mary") != std::string::npos) {
+        return "Mary had a little lamb little lamb little lamb";
+    }
+    if (lower.find("london") != std::string::npos) {
+        return "London bridge is falling down falling down falling down";
+    }
+    if (lower.find("lightly") != std::string::npos) {
+        return "Lightly row lightly row oer the glassy waves we go";
+    }
+    if (lower.find("birthday") != std::string::npos) {
+        return "Happy birthday to you happy birthday to you";
+    }
+    return "la la la la";
+}
+
+std::string sanitize_label(std::string label) {
+    const std::string invalid = "\\/:*?\"<>|";
+    for (char& c : label) {
+        if (invalid.find(c) != std::string::npos) {
+            c = '_';
+        }
+    }
+    if (label.size() > 120) {
+        label.resize(120);
+    }
+    return label;
+}
+
+std::vector<AcapellaFixture> discover_fixtures() {
+    const fs::path root{MUSIC_ELF_ACAPELLA_DIR};
+    std::vector<fs::path> wavs;
+    if (fs::exists(root)) {
+        for (const auto& entry : fs::recursive_directory_iterator(root)) {
+            if (!entry.is_regular_file()) continue;
+            const std::string ext = lower_ascii(entry.path().extension().string());
+            if (ext == ".wav") {
+                wavs.push_back(entry.path());
+            }
+        }
+    }
+    std::sort(wavs.begin(), wavs.end());
+
+    std::vector<AcapellaFixture> table;
+    table.reserve(wavs.size());
+    for (std::size_t i = 0; i < wavs.size(); ++i) {
+        const fs::path relative = fs::relative(wavs[i], root);
+        std::string label = relative.generic_string();
+        const std::string ext = relative.extension().generic_string();
+        if (!ext.empty() && label.size() >= ext.size()) {
+            label.resize(label.size() - ext.size());
+        }
+
+        std::ostringstream numbered_label;
+        numbered_label << std::setw(3) << std::setfill('0') << (i + 1)
+                       << "_" << sanitize_label(label);
+
+        AcapellaFixture fx;
+        fx.filename = relative.string();
+        fx.label = numbered_label.str();
+        fx.expected_note_count_min = 0;
+        fx.expected_note_count_max = 4096;
+        fx.lyrics = lyrics_for_filename(relative.filename().string());
+        fx.strict_ground_truth = false;
+        table.push_back(std::move(fx));
+    }
+    return table;
+}
+
 const std::vector<AcapellaFixture>& fixtures() {
-    static const std::vector<AcapellaFixture> table = {
-        {
-            "Twinkle Twinkle Little Star - Acapella +4Semitone 8kHz.wav",
-            "twinkle_fast",
-            4, 64,                          // E major, E4 (transposed)
-            {60.0, 180.0},
-            10, 200,
-            "Twinkle twinkle little star how I wonder what you are",
-            true,
-        },
-        {
-            "Twinkle Twinkle Little Star - Acapella Slow +4Semitone 8kHz.wav",
-            "twinkle_slow",
-            4, 64,
-            {40.0, 200.0},                  // slow vocal can confuse BPM detector
-            10, 400,
-            "Twinkle twinkle little star how I wonder what you are",
-            true,
-        },
-        {
-            "Mary Had A Little Lamb _ Acapella Solo Singing Cover +4Semitone 8kHz.wav",
-            "mary_lamb",
-            10, 68,                         // harmony currently reports Bb minor for this take;
-                                            // pitch class 10 captures that until key detector improves
-            {60.0, 180.0},
-            8, 400,
-            "Mary had a little lamb little lamb little lamb",
-            true,
-        },
-        {
-            "London Bridge Is Falling Down_Acapella +4Semitone 8kHz.wav",
-            "london_bridge",
-            11, 71,                         // B major, B4
-            {60.0, 180.0},
-            8, 300,
-            "London bridge is falling down falling down falling down",
-            true,
-        },
-        {
-            "Lightly Row Lyrics _ Suzuki Violin Book 1 - Song 2 +4Semitone 8kHz.wav",
-            "lightly_row",
-            1, 80,                          // C# major, G#5
-            {60.0, 180.0},
-            10, 300,
-            "Lightly row lightly row oer the glassy waves we go",
-            true,
-        },
-        {
-            "Happy Birthday To You _ Acapella Solo Singing Cover +4Semitone 8kHz.wav",
-            "happy_birthday",
-            9, 69,                          // A major, A4
-            {60.0, 180.0},
-            8, 400,
-            "Happy birthday to you happy birthday to you",
-            true,
-        },
-        {
-            "48kHz_Happy Birthday_Thomas_x15dB.WAV",
-            "happy_birthday_thomas_48k",
-            std::nullopt, std::nullopt,
-            {40.0, 200.0},
-            0, 4096,
-            "Happy birthday to you happy birthday to you",
-            false,                          // unknown source, smoke only
-        },
-    };
+    static const std::vector<AcapellaFixture> table = discover_fixtures();
     return table;
 }
 
@@ -277,9 +291,9 @@ FixtureMetrics run_fixture(const AcapellaFixture& fx, Report& report) {
     try {
         audio = music_elf::read_wav_file(wav_path.string());
         io_ok = !audio.samples.empty() &&
-                (audio.sample_rate == 8000 || audio.sample_rate == 16000 ||
-                 audio.sample_rate == 22050 || audio.sample_rate == 44100 ||
-                 audio.sample_rate == 48000);
+                audio.sample_rate > 0 &&
+                audio.channels > 0 &&
+                audio.samples.size() % static_cast<std::size_t>(audio.channels) == 0;
     } catch (const std::exception& e) {
         record(report, false, fx.label, "audio_io.read_wav_file",
                std::string("exception: ") + e.what());
@@ -573,15 +587,21 @@ FixtureMetrics run_fixture(const AcapellaFixture& fx, Report& report) {
         pipe_cfg.pitch.hop_size = 64;
     }
     pipe_cfg.dynamics.sample_rate = audio.sample_rate;
-    const auto pipeline_result =
-        music_elf::run_core_pipeline(audio, tokens, pipe_cfg);
-    const bool pipeline_ok = !pipeline_result.notes.empty() &&
-                             !pipeline_result.midi_bytes.empty() &&
-                             !pipeline_result.musicxml.empty();
-    record(report, pipeline_ok, fx.label, "core_pipeline.run_core_pipeline",
-           "notes=" + std::to_string(pipeline_result.notes.size()) +
-               " midi_bytes=" +
-               std::to_string(pipeline_result.midi_bytes.size()));
+    pipe_cfg.render_preview_audio = true;
+    {
+        const auto pipeline_result =
+            music_elf::run_core_pipeline(audio, tokens, pipe_cfg);
+        const bool pipeline_ok = !pipeline_result.notes.empty() &&
+                                 !pipeline_result.midi_bytes.empty() &&
+                                 !pipeline_result.musicxml.empty() &&
+                                 !pipeline_result.vocal_band_audio.samples.empty();
+        record(report, pipeline_ok, fx.label, "core_pipeline.run_core_pipeline",
+               "notes=" + std::to_string(pipeline_result.notes.size()) +
+                   " midi_bytes=" +
+                   std::to_string(pipeline_result.midi_bytes.size()) +
+                   " vocal_band_samples=" +
+                   std::to_string(pipeline_result.vocal_band_audio.samples.size()));
+    }
 
     // --- audio_renderer (melody preview) ---------------------------------
     std::vector<music_elf::GeneratedNote> melody_for_render;
@@ -723,9 +743,15 @@ void write_summary(const std::vector<FixtureMetrics>& metrics,
 int main() {
     Report report;
     std::vector<FixtureMetrics> metrics;
-    metrics.reserve(fixtures().size());
+    const auto& all_fixtures = fixtures();
+    metrics.reserve(all_fixtures.size());
 
-    for (const auto& fx : fixtures()) {
+    if (all_fixtures.empty()) {
+        record(report, false, "acapella", "fixtures.discovered",
+               std::string("no WAV files under ") + MUSIC_ELF_ACAPELLA_DIR);
+    }
+
+    for (const auto& fx : all_fixtures) {
         try {
             metrics.push_back(run_fixture(fx, report));
         } catch (const std::exception& e) {

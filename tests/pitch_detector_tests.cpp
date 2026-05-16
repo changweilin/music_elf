@@ -251,6 +251,35 @@ void test_streaming_consistency() {
     }
 }
 
+void test_small_output_capacity_preserves_pending_frames() {
+    PitchDetectorConfig config;
+    config.sample_rate = 48000;
+    const auto samples = make_sine(config.sample_rate, 1.0, 440.0);
+    const auto full = run_detector(samples, config, samples.size());
+
+    PitchDetector detector(config);
+    std::vector<PitchEstimate> drained;
+    PitchEstimate scratch;
+    std::size_t written = detector.process(samples.data(), samples.size(), &scratch, 1);
+    if (written == 1) {
+        drained.push_back(scratch);
+    }
+    while (true) {
+        written = detector.process(nullptr, 0, &scratch, 1);
+        if (written == 0) {
+            break;
+        }
+        drained.push_back(scratch);
+    }
+
+    require(drained.size() == full.size(), "small output capacity should not drop frames");
+    for (std::size_t i = 0; i < full.size(); ++i) {
+        require(std::fabs(drained[i].time_seconds - full[i].time_seconds) < 0.000001,
+                "pending frame order changed");
+        require(drained[i].voiced == full[i].voiced, "pending frame voiced flag changed");
+    }
+}
+
 void test_realtime_budget() {
     PitchDetectorConfig config;
     config.sample_rate = 48000;
@@ -280,6 +309,7 @@ int main() {
         test_vibrato_tracking();
         test_unvoiced_inputs();
         test_streaming_consistency();
+        test_small_output_capacity_preserves_pending_frames();
         test_realtime_budget();
     } catch (const std::exception& error) {
         std::cerr << "pitch_detector_tests failed: " << error.what() << '\n';
@@ -289,4 +319,3 @@ int main() {
     std::cout << "pitch_detector_tests passed\n";
     return EXIT_SUCCESS;
 }
-

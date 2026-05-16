@@ -30,6 +30,7 @@ flowchart TD
     J --> K["Simple accompaniment generation<br/>block, arpeggio, bass+chord, range limits, voice leading"]
     K --> L["MIDI export<br/>Standard MIDI file bytes"]
     K --> X4["Built-in audio preview render<br/>simple oscillator WAV"]
+    X4 --> X5["Vocal-band mix<br/>original vocal + rendered arrangement"]
     E --> L
     E --> M["MusicXML export<br/>quantized lead sheet with chord symbols"]
     H --> M
@@ -46,7 +47,7 @@ flowchart TD
     classDef partial fill:#fff3bf,stroke:#b08900,color:#4a3b00;
     classDef todo fill:#ffe3e3,stroke:#c92a2a,color:#5c1010;
 
-    class A1,C,D,E,F,G,H,I,J,K,L,M,X1,X2,X3,X4 done;
+    class A1,C,D,E,F,G,H,I,J,K,L,M,X1,X2,X3,X4,X5 done;
     class U1,U2,H2,U3,P1,U4,U5 todo;
 ```
 
@@ -61,13 +62,14 @@ flowchart TD
 - Simple accompaniment generation: `include/music_elf/accompaniment_generator.hpp`
 - WAV I/O and mono downmix: `include/music_elf/audio_io.hpp`
 - Built-in note audio preview renderer: `include/music_elf/audio_renderer.hpp`
+- Vocal-band mix step: `CorePipelineConfig::render_preview_audio` lets callers opt in to rendering the generated accompaniment and merging it with the original vocal audio into `CorePipelineResult::vocal_band_audio`.
 - End-to-end pipeline runner: `include/music_elf/core_pipeline.hpp`
 - MIDI export: `include/music_elf/midi_writer.hpp`
 - General MIDI catalog generator: `include/music_elf/midi_catalog.hpp`
 - Quantized single-part MusicXML lead sheet export with measures, rests, ties, lyrics, chord symbols, key, time, and clef: `include/music_elf/musicxml_writer.hpp`
-- CLI demo, inspect, benchmark, catalog, and render-preview helpers: `tools/music_elf_cli.cpp`
+- CLI demo, inspect, benchmark, catalog, and render-preview helpers: `tools/music_elf_cli.cpp`; `render-preview` enables preview rendering and writes the original vocal plus rendered arrangement as a vocal-band WAV.
 - CLI supports `--analysis-wav` to run the pipeline on an externally prepared stem (e.g., source-separated vocals) while keeping the original input path for context.
-- C ABI wrapper with pitch, pipeline summary, MIDI export, and MusicXML export helpers: `include/music_elf/c_api.h`
+- C ABI wrapper with pitch, pipeline summary, MIDI export, MusicXML export, and vocal-band WAV export helpers: `include/music_elf/c_api.h`
 - Model-backed feature interfaces: `include/music_elf/model_interfaces.hpp`
 - Model integration data contracts: `docs/model_integration_schemas.md`
 

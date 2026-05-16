@@ -164,6 +164,12 @@ const PROCESS_STAGES = [
   { zh: '混音輸出', en: 'Mix + export', detail: 'Auto balance · -14 LUFS · preview bounce' },
 ];
 
+const AUDIO_TAKES_KEY = 'musicelf.audioTakes.v1';
+const SAVE_RECORDING_KEY = 'musicelf.saveRecording.v1';
+const AUDIO_DB_NAME = 'musicelf-audio-library';
+const AUDIO_STORE_NAME = 'takes';
+const AUDIO_TAKE_LIMIT = 10;
+
 const PITCH_TO_MIDI = {
   C3: 48, D3: 50, E3: 52, F3: 53, G3: 55, A3: 57, B3: 59,
   C4: 60, D4: 62, E4: 64, F4: 65, G4: 67, A4: 69, B4: 71,
@@ -209,7 +215,7 @@ function chordToMidis(symbol, octave = 3) {
   return intervals.map(i => root + i);
 }
 
-function buildProcessResult({ time, style, sections, sectionState, master, swell }) {
+function buildProcessResult({ time, style, sections, sectionState, master, swell, audioSource }) {
   const activeSections = sections
     .filter(s => !(sectionState[s.id]?.mute))
     .map(s => ({
@@ -221,12 +227,20 @@ function buildProcessResult({ time, style, sections, sectionState, master, swell
       solo: Boolean(sectionState[s.id]?.solo),
     }));
   const styleMeta = STYLES.find(s => s.id === style) || STYLES[0];
-  const capturedSeconds = clamp(time || 12, 1, 12);
+  const sourceSeconds = audioSource?.durationSeconds || time || 12;
+  const capturedSeconds = clamp(sourceSeconds, 1, 180);
+  const sourceType = audioSource?.origin === 'file'
+    ? 'Imported audio'
+    : audioSource?.origin === 'library'
+      ? 'Saved recording'
+      : 'Live recording';
 
   return {
     id: 'take_' + Date.now().toString(36),
-    durationSeconds: 12.4,
+    durationSeconds: clamp(capturedSeconds, 1, 30),
     capturedSeconds,
+    sourceName: audioSource?.name || 'Current recording',
+    sourceType,
     style,
     styleName: `${styleMeta.zh} · ${styleMeta.en}`,
     activeSections,
@@ -428,10 +442,159 @@ function formatTime(s) {
   return `${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}.${String(ms).padStart(2,'0')}`;
 }
 
+function formatAudioSize(bytes) {
+  if (!bytes) return '0 KB';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatTakeStamp(ts) {
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function openAudioLibrary() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error('IndexedDB is unavailable'));
+      return;
+    }
+    const request = indexedDB.open(AUDIO_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(AUDIO_STORE_NAME)) {
+        db.createObjectStore(AUDIO_STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Could not open audio library'));
+  });
+}
+
+async function putAudioBlob(id, blob) {
+  const db = await openAudioLibrary();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(AUDIO_STORE_NAME, 'readwrite');
+    tx.objectStore(AUDIO_STORE_NAME).put({ id, blob });
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error || new Error('Could not save audio')); };
+  });
+}
+
+async function getAudioBlob(id) {
+  const db = await openAudioLibrary();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(AUDIO_STORE_NAME, 'readonly');
+    const request = tx.objectStore(AUDIO_STORE_NAME).get(id);
+    request.onsuccess = () => resolve(request.result?.blob || null);
+    request.onerror = () => reject(request.error || new Error('Could not read audio'));
+    tx.oncomplete = () => db.close();
+  });
+}
+
+async function deleteAudioBlob(id) {
+  const db = await openAudioLibrary();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(AUDIO_STORE_NAME, 'readwrite');
+    tx.objectStore(AUDIO_STORE_NAME).delete(id);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error || new Error('Could not delete audio')); };
+  });
+}
+
+function preferredRecordingMime() {
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+  ];
+  if (!window.MediaRecorder?.isTypeSupported) return '';
+  return candidates.find(type => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function writeWavString(view, offset, text) {
+  for (let i = 0; i < text.length; i += 1) {
+    view.setUint8(offset + i, text.charCodeAt(i));
+  }
+}
+
+function createDemoTakeBlob(durationSeconds = 12) {
+  const sampleRate = 24000;
+  const duration = clamp(durationSeconds || 12, 1, 12);
+  const frames = Math.floor(sampleRate * duration);
+  const buffer = new ArrayBuffer(44 + frames * 2);
+  const view = new DataView(buffer);
+  writeWavString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + frames * 2, true);
+  writeWavString(view, 8, 'WAVE');
+  writeWavString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeWavString(view, 36, 'data');
+  view.setUint32(40, frames * 2, true);
+
+  let phase = 0;
+  for (let i = 0; i < frames; i += 1) {
+    const t = i / sampleRate;
+    let line = TRACK[0];
+    for (const item of TRACK) if (t >= item.t) line = item;
+    const midi = PITCH_TO_MIDI[line.pitch] || 60;
+    const vibrato = Math.sin(t * Math.PI * 11) * 0.006;
+    const freq = midiToFrequency(midi) * (1 + vibrato);
+    phase += (Math.PI * 2 * freq) / sampleRate;
+    const envelope = Math.min(1, t * 6, (duration - t) * 6);
+    const sample = Math.sin(phase) * 0.18 * Math.max(0, envelope);
+    view.setInt16(44 + i * 2, clamp(sample, -1, 1) * 0x7fff, true);
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function readAudioDuration(file) {
+  return new Promise((resolve) => {
+    const audio = document.createElement('audio');
+    const url = URL.createObjectURL(file);
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(url);
+      resolve(Number.isFinite(value) && value > 0 ? value : 12);
+    };
+    const timeout = setTimeout(() => done(12), 2200);
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => {
+      clearTimeout(timeout);
+      done(audio.duration);
+    };
+    audio.onerror = () => {
+      clearTimeout(timeout);
+      done(12);
+    };
+    audio.src = url;
+  });
+}
+
+function buildSourcePitchHistory(source) {
+  const len = clamp(Math.round((source?.durationSeconds || 12) * 10), 36, 120);
+  return Array.from({ length: len }, (_, i) => {
+    const t = (i / Math.max(1, len - 1)) * Math.PI * 2;
+    return clamp(50 + Math.sin(t * 0.8) * 24 + Math.sin(t * 4.5) * 5, 0, 100);
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // LEFT RAIL — Voice / pitch / lyric
 
-function VoicePanel({ recording, time, current, pitchHistory, processState, processResult, playback, onPlayResult, onProcessAgain }) {
+function VoicePanel({ recording, time, current, pitchHistory, processState, processResult, playback, onPlayResult, onProcessAgain,
+                      saveRecording, onSaveRecordingChange, audioTakes, activeAudioSource, captureState,
+                      onImportAudio, onProcessSavedAudio, onDeleteSavedAudio, onProcessActiveAudio }) {
   // pitch line drawing
   const pathD = useMemo(() => {
     if (!pitchHistory.length) return '';
@@ -483,11 +646,23 @@ function VoicePanel({ recording, time, current, pitchHistory, processState, proc
         <Reading label="Confidence" val="0.93" unit="" />
       </div>
 
+      <AudioSourcePanel recording={recording}
+                        saveRecording={saveRecording}
+                        onSaveRecordingChange={onSaveRecordingChange}
+                        audioTakes={audioTakes}
+                        activeAudioSource={activeAudioSource}
+                        captureState={captureState}
+                        onImportAudio={onImportAudio}
+                        onProcessSavedAudio={onProcessSavedAudio}
+                        onDeleteSavedAudio={onDeleteSavedAudio}
+                        onProcessActiveAudio={onProcessActiveAudio} />
+
       <ProcessingPanel processState={processState}
                        processResult={processResult}
                        playback={playback}
                        onPlayResult={onPlayResult}
-                       onProcessAgain={onProcessAgain} />
+                       onProcessAgain={onProcessAgain}
+                       activeAudioSource={activeAudioSource} />
 
       <div className="lyric-card">
         <div className="panel-eyebrow">LYRIC · 歌詞辨識</div>
@@ -514,6 +689,87 @@ function Reading({ label, val, unit }) {
       <div className="reading-label">{label}</div>
       <div className="reading-val">{val}<span>{unit}</span></div>
     </div>
+  );
+}
+
+function AudioSourcePanel({ recording, saveRecording, onSaveRecordingChange, audioTakes, activeAudioSource,
+                            captureState, onImportAudio, onProcessSavedAudio, onDeleteSavedAudio,
+                            onProcessActiveAudio, compact = false }) {
+  const inputId = compact ? 'audio-import-mobile' : 'audio-import-desktop';
+  const statusText = captureState?.message || '錄音與音檔都會在本機瀏覽器處理';
+
+  return (
+    <section className={'audio-source-panel' + (compact ? ' compact' : '')}>
+      <div className="audio-source-head">
+        <div>
+          <div className="panel-eyebrow">AUDIO · 音檔來源</div>
+          <div className="audio-source-title">錄音檔庫</div>
+        </div>
+        <label className={'save-toggle' + (saveRecording ? ' on' : '')}>
+          <input type="checkbox"
+                 checked={saveRecording}
+                 onChange={(e) => onSaveRecordingChange(e.target.checked)} />
+          <span className="save-toggle-box" />
+          <span>儲存錄音</span>
+        </label>
+      </div>
+
+      <div className="audio-source-status" data-state={captureState?.status || 'idle'}>
+        {statusText}
+      </div>
+
+      {activeAudioSource && (
+        <div className="active-audio">
+          <div className="active-audio-main">
+            <span className="active-audio-label">
+              {activeAudioSource.origin === 'file' ? '已選音檔' : activeAudioSource.origin === 'library' ? '已存錄音' : '目前錄音'}
+            </span>
+            <span className="active-audio-name">{activeAudioSource.name}</span>
+          </div>
+          <span className="active-audio-meta">
+            {formatTime(activeAudioSource.durationSeconds || 0)} · {formatAudioSize(activeAudioSource.size)}
+          </span>
+        </div>
+      )}
+
+      <div className="audio-source-actions">
+        <label className="btn btn-ghost audio-import-btn" htmlFor={inputId}>
+          選擇音檔
+          <input id={inputId}
+                 className="audio-file-input"
+                 type="file"
+                 accept="audio/*,.wav,.mp3,.m4a,.webm,.ogg"
+                 onChange={onImportAudio}
+                 disabled={recording} />
+        </label>
+        <button className="btn btn-ghost"
+                onClick={onProcessActiveAudio}
+                disabled={!activeAudioSource || recording}>
+          編制選取
+        </button>
+      </div>
+
+      <div className="audio-take-list">
+        {audioTakes.length === 0 ? (
+          <div className="audio-empty">尚未儲存錄音。停止錄音時開啟「儲存錄音」即可加入這裡。</div>
+        ) : audioTakes.map(take => (
+          <div key={take.id} className={'audio-take-row' + (activeAudioSource?.id === take.id ? ' on' : '')}>
+            <button className="audio-take-main"
+                    onClick={() => onProcessSavedAudio(take)}
+                    disabled={recording}>
+              <span className="audio-take-name">{take.name}</span>
+              <span className="audio-take-meta">
+                {formatTakeStamp(take.savedAt)} · {formatTime(take.durationSeconds || 0)} · {formatAudioSize(take.size)}
+              </span>
+            </button>
+            <button className="audio-take-delete"
+                    aria-label={`Delete ${take.name}`}
+                    onClick={() => onDeleteSavedAudio(take.id)}
+                    disabled={recording}>✕</button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1345,7 +1601,7 @@ function Score({ time, recording }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PROCESSING / PLAYBACK
 
-function ProcessingPanel({ processState, processResult, playback, onPlayResult, onProcessAgain, compact = false }) {
+function ProcessingPanel({ processState, processResult, playback, onPlayResult, onProcessAgain, activeAudioSource, compact = false }) {
   const status = processState.status;
   const isProcessing = status === 'processing';
   const isReady = status === 'ready' && processResult;
@@ -1353,7 +1609,8 @@ function ProcessingPanel({ processState, processResult, playback, onPlayResult, 
   const stage = PROCESS_STAGES[processState.stageIndex] || PROCESS_STAGES[0];
   const playing = playback.state === 'playing';
   const title = isProcessing ? stage.zh : isReady ? '處理完成' : status === 'error' ? '處理中斷' : '等待錄音';
-  const subtitle = isProcessing ? stage.detail : isReady ? `${processResult.format} · ${processResult.lufs} LUFS` : 'Record take queue';
+  const queuedSource = activeAudioSource ? `${activeAudioSource.name} · ready` : 'Record take queue';
+  const subtitle = isProcessing ? stage.detail : isReady ? `${processResult.format} · ${processResult.lufs} LUFS` : queuedSource;
 
   return (
     <section className={'process-panel ' + status + (compact ? ' compact' : '')}
@@ -1386,7 +1643,9 @@ function ProcessingPanel({ processState, processResult, playback, onPlayResult, 
       {!isProcessing && !isReady && (
         <div className="process-empty">
           <span className="process-empty-main">{subtitle}</span>
-          <span className="process-empty-sub">停止錄音後會自動分析、套用效果並建立可播放預覽。</span>
+          <span className="process-empty-sub">
+            {activeAudioSource ? '可直接編制選取音檔，或重新錄音建立新的來源。' : '停止錄音後會自動分析、套用效果並建立可播放預覽。'}
+          </span>
         </div>
       )}
 
@@ -1397,6 +1656,7 @@ function ProcessingPanel({ processState, processResult, playback, onPlayResult, 
             <ResultItem label="Mix" value={processResult.mix} />
             <ResultItem label="Score" value={`${processResult.notes} notes · ${processResult.key}`} />
             <ResultItem label="Parts" value={`${processResult.activeSections.length} sections`} />
+            <ResultItem label="Source" value={`${processResult.sourceType} · ${processResult.sourceName}`} />
           </div>
           <div className="transport">
             <button className={'btn ' + (playing ? 'btn-stop' : 'btn-rec')}
@@ -1404,7 +1664,7 @@ function ProcessingPanel({ processState, processResult, playback, onPlayResult, 
                     data-testid="play-result">
               {playing ? <><span className="rec-square" /> 停止播放</> : <><span className="play-triangle" /> 播放處理結果</>}
             </button>
-            <button className="btn btn-ghost" onClick={onProcessAgain}>重新處理</button>
+            <button className="btn btn-ghost" onClick={() => onProcessAgain()}>重新處理</button>
           </div>
           <div className="playback-bar" data-on={playing ? '1' : '0'}>
             <div className="playback-fill" style={{ width: playback.progress + '%' }} />
@@ -1427,7 +1687,7 @@ function ResultItem({ label, value }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPORT MODAL
 
-function ExportModal({ open, onClose, processState, processResult, playback, onPlayResult, onProcessAgain }) {
+function ExportModal({ open, onClose, processState, processResult, playback, onPlayResult, onProcessAgain, activeAudioSource }) {
   const [stage, setStage] = useState(0); // 0 idle, 1 rendering, 2 done
   const [pct, setPct] = useState(0);
 
@@ -1465,6 +1725,7 @@ function ExportModal({ open, onClose, processState, processResult, playback, onP
         {stage < 2 ? (
           <>
             <div className="export-grid">
+              <ExportRow label="音檔來源 / Source"     value={processResult ? `${processResult.sourceType} · ${processResult.sourceName}` : activeAudioSource?.name || '尚未選取'} />
               <ExportRow label="檔案格式 / Format"   value={processResult?.format || 'WAV · 48 kHz · 24-bit'} />
               <ExportRow label="人聲處理 / Vocal"    value={processResult?.vocal || '保留乾聲 + Reverb · Hall A'} />
               <ExportRow label="樂器混音 / Mix"      value={processResult?.mix || '自動配重 · 等待處理結果'} />
@@ -1476,6 +1737,7 @@ function ExportModal({ open, onClose, processState, processResult, playback, onP
                              playback={playback}
                              onPlayResult={onPlayResult}
                              onProcessAgain={onProcessAgain}
+                             activeAudioSource={activeAudioSource}
                              compact />
             <div className="export-progress" data-on={stage === 1 ? '1' : '0'}>
               <div className="export-bar"><div className="export-fill" style={{ width: pct + '%' }} /></div>
@@ -1683,8 +1945,28 @@ function App() {
   const [processState, setProcessState] = useState({ status: 'idle', progress: 0, stageIndex: 0 });
   const [processResult, setProcessResult] = useState(null);
   const [playback, setPlayback] = useState({ state: 'idle', progress: 0 });
+  const [saveRecording, setSaveRecording] = useState(() => {
+    try { return localStorage.getItem(SAVE_RECORDING_KEY) !== '0'; }
+    catch { return true; }
+  });
+  const [audioTakes, setAudioTakes] = useState(() => {
+    try {
+      const raw = localStorage.getItem(AUDIO_TAKES_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.slice(0, AUDIO_TAKE_LIMIT) : [];
+    } catch { return []; }
+  });
+  const [activeAudioSource, setActiveAudioSource] = useState(null);
+  const [captureState, setCaptureState] = useState({
+    status: 'idle',
+    message: '錄音可儲存在本機，或選擇既有音檔編制。',
+  });
   const processTimerRef = useRef(null);
   const playbackRef = useRef({ ctx: null, raf: null, startedAt: 0, duration: 0 });
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const recordingSessionRef = useRef(0);
 
   const [favorites, setFavorites] = useState(() => {
     try {
@@ -1697,6 +1979,16 @@ function App() {
     try { localStorage.setItem('musicelf.favorites.v1', JSON.stringify(favorites)); }
     catch { /* quota or disabled — skip */ }
   }, [favorites]);
+
+  useEffect(() => {
+    try { localStorage.setItem(SAVE_RECORDING_KEY, saveRecording ? '1' : '0'); }
+    catch { /* localStorage disabled — keep session value only */ }
+  }, [saveRecording]);
+
+  useEffect(() => {
+    try { localStorage.setItem(AUDIO_TAKES_KEY, JSON.stringify(audioTakes)); }
+    catch { /* metadata is optional; blobs still remain in IndexedDB */ }
+  }, [audioTakes]);
 
   const onSaveFavorite = () => {
     if (favorites.length >= FAV_MAX) return;
@@ -1771,7 +2063,109 @@ function App() {
     setPlayback({ state: 'idle', progress: 0 });
   };
 
-  const startProcessing = () => {
+  const stopInputStream = () => {
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+    mediaStreamRef.current = null;
+  };
+
+  const startBrowserRecording = async (sessionId) => {
+    recordedChunksRef.current = [];
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setCaptureState({
+        status: 'simulated',
+        message: '瀏覽器無法直接錄音，停止後會儲存一段可測試的示範音檔。',
+      });
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (sessionId !== recordingSessionRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      const mimeType = preferredRecordingMime();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) recordedChunksRef.current.push(event.data);
+      };
+      recorder.start(250);
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      setCaptureState({
+        status: 'recording',
+        message: saveRecording ? '麥克風錄音中，停止後會儲存到錄音檔庫。' : '麥克風錄音中，此次不會儲存。',
+      });
+    } catch (err) {
+      stopInputStream();
+      mediaRecorderRef.current = null;
+      setCaptureState({
+        status: 'simulated',
+        message: '無法取得麥克風權限，停止後會使用示範音檔完成流程。',
+      });
+    }
+  };
+
+  const stopBrowserRecording = () => new Promise((resolve) => {
+    const recorder = mediaRecorderRef.current;
+    const finish = () => {
+      stopInputStream();
+      mediaRecorderRef.current = null;
+      const type = recordedChunksRef.current[0]?.type || recorder?.mimeType || 'audio/webm';
+      const blob = recordedChunksRef.current.length ? new Blob(recordedChunksRef.current, { type }) : null;
+      recordedChunksRef.current = [];
+      resolve(blob);
+    };
+
+    if (!recorder || recorder.state === 'inactive') {
+      finish();
+      return;
+    }
+
+    recorder.onstop = finish;
+    try {
+      recorder.stop();
+    } catch {
+      finish();
+    }
+  });
+
+  const saveRecordedTake = async (blob, durationSeconds) => {
+    const savedAt = Date.now();
+    const meta = {
+      id: 'audio_' + savedAt.toString(36) + Math.random().toString(36).slice(2, 6),
+      name: `錄音 ${formatTakeStamp(savedAt)}`,
+      origin: 'library',
+      durationSeconds: clamp(durationSeconds || 12, 1, 180),
+      mimeType: blob.type || 'audio/wav',
+      size: blob.size,
+      savedAt,
+    };
+
+    try {
+      await putAudioBlob(meta.id, blob);
+      setAudioTakes(prev => {
+        const next = [meta, ...prev].slice(0, AUDIO_TAKE_LIMIT);
+        prev.slice(AUDIO_TAKE_LIMIT - 1).forEach(oldTake => deleteAudioBlob(oldTake.id).catch(() => {}));
+        return next;
+      });
+      setCaptureState({ status: 'saved', message: `已儲存 ${meta.name}，可稍後重新編制。` });
+      return meta;
+    } catch {
+      setCaptureState({ status: 'error', message: '錄音儲存失敗，但仍可用目前錄音繼續編制。' });
+      return null;
+    }
+  };
+
+  const prepareAudioSource = (source) => {
+    setActiveAudioSource(source);
+    setTime(clamp(source.durationSeconds || 0, 0, 12));
+    setPitchHistory(buildSourcePitchHistory(source));
+  };
+
+  const startProcessing = (sourceOverride, durationOverride) => {
+    const sourceForProcessing = sourceOverride?.id ? sourceOverride : activeAudioSource;
+    const analysisTime = durationOverride ?? sourceForProcessing?.durationSeconds ?? time;
     stopPlayback();
     if (processTimerRef.current) clearInterval(processTimerRef.current);
     setProcessResult(null);
@@ -1791,7 +2185,15 @@ function App() {
       if (progress >= 100) {
         clearInterval(processTimerRef.current);
         processTimerRef.current = null;
-        const result = buildProcessResult({ time, style, sections, sectionState, master, swell });
+        const result = buildProcessResult({
+          time: analysisTime,
+          style,
+          sections,
+          sectionState,
+          master,
+          swell,
+          audioSource: sourceForProcessing,
+        });
         setProcessResult(result);
         setProcessState({ status: 'ready', progress: 100, stageIndex: PROCESS_STAGES.length - 1 });
         return;
@@ -1799,6 +2201,60 @@ function App() {
 
       setProcessState({ status: 'processing', progress, stageIndex });
     }, 90);
+  };
+
+  const onImportAudio = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || recording) return;
+    if (processTimerRef.current) clearInterval(processTimerRef.current);
+    const durationSeconds = await readAudioDuration(file);
+    const source = {
+      id: 'file_' + Date.now().toString(36),
+      name: file.name || 'Imported audio',
+      origin: 'file',
+      durationSeconds: clamp(durationSeconds, 1, 180),
+      mimeType: file.type || 'audio/*',
+      size: file.size,
+      savedAt: Date.now(),
+    };
+    prepareAudioSource(source);
+    setCaptureState({ status: 'loaded', message: `已載入 ${source.name}，開始編制處理。` });
+    startProcessing(source, source.durationSeconds);
+  };
+
+  const onProcessSavedAudio = async (take) => {
+    if (recording) return;
+    try {
+      const blob = await getAudioBlob(take.id);
+      if (!blob) throw new Error('Missing blob');
+      const source = {
+        ...take,
+        origin: 'library',
+        size: take.size || blob.size,
+        mimeType: take.mimeType || blob.type || 'audio/*',
+      };
+      prepareAudioSource(source);
+      setCaptureState({ status: 'loaded', message: `已選取 ${source.name}，開始編制處理。` });
+      startProcessing(source, source.durationSeconds);
+    } catch {
+      setCaptureState({ status: 'error', message: '找不到這筆錄音內容，請刪除後重新錄製。' });
+    }
+  };
+
+  const onProcessActiveAudio = () => {
+    if (!activeAudioSource || recording) return;
+    if (activeAudioSource.origin === 'library') {
+      onProcessSavedAudio(activeAudioSource);
+      return;
+    }
+    startProcessing(activeAudioSource, activeAudioSource.durationSeconds);
+  };
+
+  const onDeleteSavedAudio = (id) => {
+    setAudioTakes(prev => prev.filter(take => take.id !== id));
+    if (activeAudioSource?.id === id) setActiveAudioSource(null);
+    deleteAudioBlob(id).catch(() => {});
   };
 
   const onPlayResult = () => {
@@ -1810,21 +2266,50 @@ function App() {
     startProcessedPreview(processResult, playbackRef, setPlayback);
   };
 
-  const onToggleRec = () => {
+  const onToggleRec = async () => {
     if (recording) {
+      const stoppedAt = clamp(time || 1, 1, 12);
+      recordingSessionRef.current += 1;
       setRecording(false);
-      startProcessing();
+      setCaptureState({ status: 'saving', message: saveRecording ? '正在整理並儲存錄音…' : '正在整理錄音…' });
+      const capturedBlob = await stopBrowserRecording();
+      const usableBlob = capturedBlob?.size ? capturedBlob : createDemoTakeBlob(stoppedAt);
+      const liveSource = {
+        id: 'live_' + Date.now().toString(36),
+        name: saveRecording ? '目前錄音' : '未儲存錄音',
+        origin: 'recording',
+        durationSeconds: stoppedAt,
+        mimeType: usableBlob.type || 'audio/wav',
+        size: usableBlob.size,
+        savedAt: Date.now(),
+      };
+      const savedSource = saveRecording ? await saveRecordedTake(usableBlob, stoppedAt) : null;
+      const source = savedSource || liveSource;
+      setActiveAudioSource(source);
+      if (!saveRecording) {
+        setCaptureState({ status: 'ready', message: '已保留目前錄音進行編制，但沒有加入錄音檔庫。' });
+      }
+      startProcessing(source, stoppedAt);
     } else {
       if (processTimerRef.current) {
         clearInterval(processTimerRef.current);
         processTimerRef.current = null;
       }
       stopPlayback();
+      stopInputStream();
       setProcessState({ status: 'idle', progress: 0, stageIndex: 0 });
       setProcessResult(null);
+      setActiveAudioSource(null);
       setRecording(true);
       setTime(0);
       setPitchHistory([]);
+      const sessionId = recordingSessionRef.current + 1;
+      recordingSessionRef.current = sessionId;
+      setCaptureState({
+        status: 'arming',
+        message: saveRecording ? '準備錄音，停止後會儲存。' : '準備錄音，此次不儲存。',
+      });
+      startBrowserRecording(sessionId);
     }
   };
 
@@ -1832,6 +2317,7 @@ function App() {
     return () => {
       if (processTimerRef.current) clearInterval(processTimerRef.current);
       clearPlaybackEngine(playbackRef);
+      stopInputStream();
     };
   }, []);
 
@@ -1860,11 +2346,23 @@ function App() {
                           current={current} pitchHistory={pitchHistory} />
 
         <div className="m-process-wrap">
+          <AudioSourcePanel recording={recording}
+                            saveRecording={saveRecording}
+                            onSaveRecordingChange={setSaveRecording}
+                            audioTakes={audioTakes}
+                            activeAudioSource={activeAudioSource}
+                            captureState={captureState}
+                            onImportAudio={onImportAudio}
+                            onProcessSavedAudio={onProcessSavedAudio}
+                            onDeleteSavedAudio={onDeleteSavedAudio}
+                            onProcessActiveAudio={onProcessActiveAudio}
+                            compact />
           <ProcessingPanel processState={processState}
                            processResult={processResult}
                            playback={playback}
                            onPlayResult={onPlayResult}
                            onProcessAgain={startProcessing}
+                           activeAudioSource={activeAudioSource}
                            compact />
         </div>
 
@@ -1906,7 +2404,8 @@ function App() {
                      processResult={processResult}
                      playback={playback}
                      onPlayResult={onPlayResult}
-                     onProcessAgain={startProcessing} />
+                     onProcessAgain={startProcessing}
+                     activeAudioSource={activeAudioSource} />
         <ApplyDOMFlags showLatin={t.showLatin} haloIntensity={t.haloIntensity} />
       </div>
     );
@@ -1925,7 +2424,16 @@ function App() {
                     processResult={processResult}
                     playback={playback}
                     onPlayResult={onPlayResult}
-                    onProcessAgain={startProcessing} />
+                    onProcessAgain={startProcessing}
+                    saveRecording={saveRecording}
+                    onSaveRecordingChange={setSaveRecording}
+                    audioTakes={audioTakes}
+                    activeAudioSource={activeAudioSource}
+                    captureState={captureState}
+                    onImportAudio={onImportAudio}
+                    onProcessSavedAudio={onProcessSavedAudio}
+                    onDeleteSavedAudio={onDeleteSavedAudio}
+                    onProcessActiveAudio={onProcessActiveAudio} />
 
         <section className="center">
           <div className="center-hd">
@@ -1969,7 +2477,8 @@ function App() {
                    processResult={processResult}
                    playback={playback}
                    onPlayResult={onPlayResult}
-                   onProcessAgain={startProcessing} />
+                   onProcessAgain={startProcessing}
+                   activeAudioSource={activeAudioSource} />
 
       <TweaksPanel title="Tweaks">
         <TweakSection label="Theme">

@@ -30,7 +30,7 @@ flowchart TD
 |---:|---|---|---|
 | 1 | MIDI output quality: tempo, track name, time signature, key signature, program change | Done | MIDI tests verify meta events |
 | 2 | Built-in lightweight audio preview renderer | Done | Generated notes can render to PCM/WAV without external synth |
-| 3 | CLI command for render-demo / audio preview | Done | CLI writes a WAV preview and tests verify RIFF output |
+| 3 | CLI command for render-demo / vocal-band audio preview | Done | CLI writes a WAV preview that merges the original vocal with the rendered arrangement |
 | 4 | Arrangement rules: inversions, bass + chord patterns, range constraints | Done | Tests cover note ranges and smoother chord movement |
 | 5 | Fixtures and snapshot tests | Done | Stable synthetic fixtures produce deterministic MIDI/MusicXML |
 | 6 | CLI productization: inspect, benchmark, render helpers | Done | CTest covers CLI smoke and e2e workflows |
@@ -42,11 +42,11 @@ flowchart TD
 
 | Area | Status | Notes |
 |---|---|---|
-| Deterministic native core | Done | Clean monophonic vocal or single-melody input can flow through pitch, notes, rhythm, dynamics, harmony, accompaniment, MIDI, MusicXML, and preview rendering. |
+| Deterministic native core | Done | Clean monophonic vocal or single-melody input can flow through pitch, notes, rhythm, dynamics, harmony, accompaniment, MIDI, MusicXML, and opt-in preview rendering with vocal-band mixing. |
 | Synthetic and snapshot test coverage | Done | Core algorithms, export bytes/text, CLI smoke tests, C API behavior, and model-boundary status are covered by CTest. |
-| Real a cappella fixture coverage | Done | Seven real vocal fixtures run through audio I/O, pitch, notes, rhythm, dynamics, harmony, lyrics alignment, export, pipeline, and preview rendering with persisted audit artifacts including pitch-stability baselines. |
+| Real a cappella fixture coverage | Done | Seven real vocal fixtures run through audio I/O, pitch, notes, rhythm, dynamics, harmony, lyrics alignment, export, pipeline, and opt-in preview rendering with persisted audit artifacts including pitch-stability baselines. |
 | CLI user workflows | Done | Default WAV export, inspect, benchmark, render-preview, render-demo, generate-catalog, and help flows are implemented. |
-| C ABI app readiness | Done | Native calls are available for pitch, pipeline summary, MIDI export, and MusicXML export. |
+| C ABI app readiness | Done | Native calls are available for pitch, pipeline summary, MIDI export, MusicXML export, and vocal-band WAV export. |
 | Conductor Studio frontend demo | Partial | A standalone docs/demo React surface exists, but it is not a production app bundle or native binding. |
 | Production app shell | Not started | Planned as Flutter desktop/mobile with an FFI facade; the app should call native bindings rather than parse CLI output. |
 | Parameter and history storage | Not started | Presets, catalog metadata, user settings, and analysis history still need a schema and migration path. |

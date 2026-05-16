@@ -29,6 +29,19 @@ std::vector<float> make_sine(int sample_rate, double seconds, double frequency_h
     return samples;
 }
 
+music_elf::AudioBuffer make_stereo_sine(int sample_rate, double seconds, double frequency_hz) {
+    const auto mono = make_sine(sample_rate, seconds, frequency_hz);
+    music_elf::AudioBuffer audio;
+    audio.sample_rate = sample_rate;
+    audio.channels = 2;
+    audio.samples.reserve(mono.size() * 2);
+    for (float sample : mono) {
+        audio.samples.push_back(sample);
+        audio.samples.push_back(sample * 0.8f);
+    }
+    return audio;
+}
+
 bool file_contains(const std::string& path, const std::string& needle) {
     std::ifstream in(path, std::ios::binary);
     const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -39,6 +52,8 @@ void test_cli_wav_to_outputs(const std::string& cli_path) {
     const std::string wav_path = "cli_input.wav";
     const std::string midi_path = "cli_output.mid";
     const std::string musicxml_path = "cli_output.musicxml";
+    const std::string vocal_band_path = "cli_output_vocal_band.wav";
+    std::remove(vocal_band_path.c_str());
 
     const auto audio = music_elf::make_mono_audio(48000, make_sine(48000, 1.2, 440.0));
     music_elf::write_wav_file(wav_path, audio);
@@ -46,6 +61,7 @@ void test_cli_wav_to_outputs(const std::string& cli_path) {
     const std::string command = "cmd /c \"\"" + cli_path + "\" " + wav_path +
                                 " --out-midi " + midi_path +
                                 " --out-musicxml " + musicxml_path +
+                                " --out-wav " + vocal_band_path +
                                 " --lyrics I_sing --pattern arpeggio\"";
     const int exit_code = std::system(command.c_str());
 
@@ -57,10 +73,12 @@ void test_cli_wav_to_outputs(const std::string& cli_path) {
     require(file_contains(musicxml_path, "<clef><sign>G</sign><line>2</line></clef>"),
             "CLI MusicXML should include clef");
     require(file_contains(musicxml_path, "<harmony>"), "CLI MusicXML should include chord symbols");
+    require(file_contains(vocal_band_path, "RIFF"), "CLI should write vocal-band WAV");
 
     std::remove(wav_path.c_str());
     std::remove(midi_path.c_str());
     std::remove(musicxml_path.c_str());
+    std::remove(vocal_band_path.c_str());
 }
 
 void test_cli_generates_catalog_subset(const std::string& cli_path) {
@@ -117,6 +135,7 @@ void test_cli_inspect_writes_summary(const std::string& cli_path) {
     require(file_contains(summary_path, "stable_pitch_frame_ratio:"),
             "inspect summary stable frame ratio");
     require(file_contains(summary_path, "musicxml_chars:"), "inspect summary MusicXML size");
+    require(file_contains(summary_path, "vocal_band_samples:"), "inspect summary vocal-band size");
 
     std::remove(wav_path.c_str());
     std::remove(summary_path.c_str());
@@ -127,7 +146,7 @@ void test_cli_benchmark_writes_runtime_summary(const std::string& cli_path) {
     const std::string summary_path = "cli_benchmark_summary.txt";
     std::remove(summary_path.c_str());
 
-    const auto audio = music_elf::make_mono_audio(48000, make_sine(48000, 1.0, 440.0));
+    const auto audio = make_stereo_sine(48000, 1.0, 440.0);
     music_elf::write_wav_file(wav_path, audio);
 
     const std::string command = "cmd /c \"\"" + cli_path +
@@ -160,6 +179,9 @@ void test_cli_render_preview_wav(const std::string& cli_path) {
     const int exit_code = std::system(command.c_str());
     require(exit_code == 0, "render-preview CLI command should exit successfully");
     require(file_contains(preview_path, "RIFF"), "render-preview should write WAV");
+    const auto preview = music_elf::read_wav_file(preview_path);
+    require(preview.channels == audio.channels, "render-preview should preserve vocal channels");
+    require(preview.samples.size() >= audio.samples.size(), "render-preview should include original vocal duration");
 
     std::remove(wav_path.c_str());
     std::remove(preview_path.c_str());
